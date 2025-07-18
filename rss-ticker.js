@@ -192,7 +192,7 @@ class RSSTickerElement extends HTMLElement {
   extractDomain(url) {
     try {
       const urlObj = new URL(url);
-      return urlObj.hostname.replace('www.', '');
+      return urlObj.hostname.replace(/^(www\.|rss\.)/, '');
     } catch {
       return 'Unknown';
     }
