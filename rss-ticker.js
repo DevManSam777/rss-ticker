@@ -133,7 +133,7 @@ class RSSTickerElement extends HTMLElement {
     } catch (error) {
       console.warn('AllOrigins fallback failed:', error);
     }
-    this.showMessage('Failed to load - CORS blocked');
+    this.showMessage('Failed to load');
   }
 
   parseJSONFeed(data, rssUrl) {
