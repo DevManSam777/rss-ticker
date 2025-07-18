@@ -99,24 +99,24 @@ class RSSTickerElement extends HTMLElement {
     this.isLoading = true;
     this.showMessage('Loading...', '#007bff');
 
-    // Services that work with simple requests (no preflight)
+    // Fast services with aggressive timeouts
     const services = [
       {
         name: 'allorigins',
         url: `https://api.allorigins.win/get?url=${encodeURIComponent(rssUrl)}`,
-        timeout: 4000,
+        timeout: 2500,
         parseXML: true
       },
       {
         name: 'jsonp-proxy',
         url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(rssUrl)}`,
-        timeout: 4000,
+        timeout: 2000,
         parseXML: true
       },
       {
         name: 'proxy-api',
         url: `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`,
-        timeout: 4000,
+        timeout: 2000,
         parseXML: false
       }
     ];
