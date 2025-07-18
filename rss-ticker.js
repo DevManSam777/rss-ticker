@@ -7,7 +7,7 @@ class RSSTickerElement extends HTMLElement {
     this.posts = [];
     this.animationId = null;
     this.resizeObserver = null;
-    this.lastMeasuredCycleWidth = 0; 
+    this.lastMeasuredCycleWidth = 0; // Store last measured width
   }
 
   static get observedAttributes() {
@@ -243,6 +243,7 @@ class RSSTickerElement extends HTMLElement {
       .join(`<span class="separator">${separator}</span>`);
 
     // Duplicate the content three times for seamless looping
+    // ORIGINAL_SET + SEPARATOR + ORIGINAL_SET + SEPARATOR + ORIGINAL_SET
     const fullContentHtml = `${postHtml}<span class="separator">${separator}</span>${postHtml}<span class="separator">${separator}</span>${postHtml}`;
     tickerContent.innerHTML = fullContentHtml;
     tickerContent.style.color = this.getAttribute('title-color') || '#333';
@@ -265,7 +266,7 @@ class RSSTickerElement extends HTMLElement {
       return;
     }
 
-    // Measure the precise width of ONE full, unique set of content 
+    // *** Crucial: Measure the precise width of ONE full, unique set of content ***
     const separator = this.getAttribute('separator') || '|';
     const postHtml = this.posts
       .map((post, index) => `<a href="${post.link}" target="_blank" rel="noopener" class="post-link" data-index="${index}"><span class="post-domain">${post.domain}</span><span class="post-date">${post.date}</span><span class="post-title">${post.title}</span></a>`)
@@ -392,6 +393,7 @@ class RSSTickerElement extends HTMLElement {
         will-change: transform;
         white-space: nowrap;
         transform: translateX(0); /* Ensure initial state is 0 */
+        text-shadow: none;
       }
       .ticker-container:hover .ticker-content,
       .ticker-content:hover {
