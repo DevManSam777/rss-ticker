@@ -87,3 +87,8 @@ The `font-size` attribute controls the size of article titles and separators. Do
 - Customizable attributes
 - Works with most RSS/Atom feeds
 - Mobile responsive
+
+## License
+[LICENSE](LICENSE)  
+
+Copyright (c) 2025 DevManSam
