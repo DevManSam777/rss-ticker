@@ -2,6 +2,8 @@
 
 A web component that displays RSS feeds as a scrolling ticker.
 
+ ![rss ticker example](rss_ticker.gif)
+
 ## Features
 
 - Seamless infinite scrolling with no gaps
@@ -77,25 +79,11 @@ The `font-size` attribute controls the size of article titles and separators. Do
 </rss-ticker>
 ```
 
-### News Ticker
-
-```html
-<rss-ticker 
-    rss-url="https://feeds.reuters.com/reuters/topNews"
-    speed="8"
-    separator="•"
-    font-size="14px"
-    font-weight="normal"
-    domain-color="red"
-    background-color="white"
-    max-posts="20">
-</rss-ticker>
-```
-
 ## Features
 
 - Smooth infinite scrolling
 - Hover to pause
 - Clickable article links
+- Customizable attributes
 - Works with most RSS/Atom feeds
 - Mobile responsive
