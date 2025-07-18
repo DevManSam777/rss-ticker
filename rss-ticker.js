@@ -162,7 +162,7 @@ class RSSTickerElement extends HTMLElement {
 
   parseJSONFeed(data, rssUrl) {
     const domain = this.extractDomain(rssUrl);
-    const maxPosts = parseInt(this.getAttribute('max-posts')) || 10;
+    const maxPosts = parseInt(this.getAttribute('max-posts')) || 15;
 
     let items = [];
     
@@ -332,7 +332,7 @@ class RSSTickerElement extends HTMLElement {
     this.lastMeasuredCycleWidth = cycleWidth;
 
     const speed = Math.max(1, Math.min(10, parseInt(this.getAttribute('speed')) || 5));
-    const duration = cycleWidth / (speed * 25); // Faster base speed
+    const duration = cycleWidth / (speed * 25); 
 
     const styleEl = this.shadowRoot.querySelector('style');
     if (styleEl) {
