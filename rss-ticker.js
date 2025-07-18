@@ -7,7 +7,8 @@ class RSSTickerElement extends HTMLElement {
     this.posts = [];
     this.animationId = null;
     this.resizeObserver = null;
-    this.lastMeasuredCycleWidth = 0; // Store last measured width
+    this.lastMeasuredCycleWidth = 0;
+    this.isLoading = false;
   }
 
   static get observedAttributes() {
@@ -33,18 +34,15 @@ class RSSTickerElement extends HTMLElement {
     this.fetchRSSFeed();
 
     this.resizeObserver = new ResizeObserver(entries => {
-      // Re-evaluate animation when container size changes
-      if (entries.length > 0 && this.lastMeasuredCycleWidth > 0) { // Only re-measure if content exists
-        // Debounce to prevent excessive calls during rapid resizing
+      if (entries.length > 0 && this.lastMeasuredCycleWidth > 0) {
         if (this.resizeTimeout) {
           clearTimeout(this.resizeTimeout);
         }
         this.resizeTimeout = setTimeout(() => {
-          this.updateTickerContent(); // This will also call startAnimation
+          this.updateTickerContent();
         }, 100);
       }
     });
-    // Observe the ticker-container to detect overall size changes
     this.resizeObserver.observe(this.shadowRoot.querySelector('.ticker-container'));
   }
 
@@ -58,6 +56,7 @@ class RSSTickerElement extends HTMLElement {
     if (this.resizeTimeout) {
       clearTimeout(this.resizeTimeout);
     }
+    this.isLoading = false;
   }
 
   attributeChangedCallback(name, oldValue, newValue) {
@@ -69,7 +68,6 @@ class RSSTickerElement extends HTMLElement {
         this.fetchRSSFeed();
       } else {
         this.updateStyles();
-        // If styles related to size/font change, re-evaluate animation
         if (['font-family', 'font-weight', 'font-size', 'separator'].includes(name)) {
           this.updateTickerContent();
         }
@@ -93,106 +91,139 @@ class RSSTickerElement extends HTMLElement {
 
   async fetchRSSFeed() {
     const rssUrl = this.getAttribute('rss-url');
-    if (!rssUrl) {
-      this.showMessage('No RSS URL provided');
+    if (!rssUrl || this.isLoading) {
+      if (!rssUrl) this.showMessage('No RSS URL provided');
       return;
     }
-    this.showMessage('Loading...');
 
-    const requestedMaxPosts = parseInt(this.getAttribute('max-posts'));
-    const proxyCount = (isNaN(requestedMaxPosts) || requestedMaxPosts <= 0) ? 100 : Math.min(requestedMaxPosts, 100);
+    this.isLoading = true;
+    this.showMessage('Loading...', '#007bff');
 
-    try {
-      const proxyUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}&count=${proxyCount}`;
-      const response = await fetch(proxyUrl);
+    // Use reliable RSS-to-JSON services (like RSS.app does)
+    const services = [
+      {
+        name: 'feed2json',
+        url: `https://www.toptal.com/developers/feed2json/convert?url=${encodeURIComponent(rssUrl)}`,
+        timeout: 6000
+      },
+      {
+        name: 'rss2json',
+        url: `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`,
+        timeout: 8000
+      }
+    ];
 
-      if (response.ok) {
+    for (const service of services) {
+      try {
+        console.log(`🚀 Trying ${service.name}...`);
+        
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), service.timeout);
+
+        const response = await fetch(service.url, {
+          signal: controller.signal,
+          headers: {
+            'Accept': 'application/json',
+            'User-Agent': 'RSS-Ticker/1.0'
+          }
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
         const data = await response.json();
-        if (data.status === 'ok' && data.items && data.items.length > 0) {
+        
+        // Handle different service response formats
+        if (service.name === 'feed2json') {
           this.parseJSONFeed(data, rssUrl);
-          return;
+        } else if (service.name === 'rss2json') {
+          if (data.status === 'ok') {
+            this.parseJSONFeed(data, rssUrl);
+          } else {
+            throw new Error(data.message || 'RSS2JSON error');
+          }
         }
-      }
-    } catch (error) {
-      console.warn('RSS2JSON failed:', error);
-    }
-    try {
-      const fallbackUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(rssUrl)}`;
-      const response = await fetch(fallbackUrl);
 
-      if (response.ok) {
-        const data = await response.json();
-        const parser = new DOMParser();
-        const xmlDoc = parser.parseFromString(data.contents, 'text/xml');
+        console.log(`✅ Success with ${service.name}!`);
+        this.isLoading = false;
+        return;
 
-        if (!xmlDoc.querySelector('parsererror')) {
-          this.parseRSSFeed(xmlDoc, rssUrl);
-          return;
-        }
+      } catch (error) {
+        console.log(`❌ ${service.name} failed:`, error.message);
       }
-    } catch (error) {
-      console.warn('AllOrigins fallback failed:', error);
     }
-    this.showMessage('Failed to load');
+
+    this.isLoading = false;
+    this.showMessage('Failed to load RSS feed', '#dc3545');
   }
 
   parseJSONFeed(data, rssUrl) {
     const domain = this.extractDomain(rssUrl);
-    const maxPosts = parseInt(this.getAttribute('max-posts'));
-    const limit = isNaN(maxPosts) ? Infinity : maxPosts;
+    const maxPosts = parseInt(this.getAttribute('max-posts')) || 15;
 
-    this.posts = data.items
-      .slice(0, limit)
+    let items = [];
+    
+    // Handle different JSON formats
+    if (data.items) {
+      items = data.items; // RSS2JSON format
+    } else if (data.entries) {
+      items = data.entries; // Some other formats
+    } else if (Array.isArray(data)) {
+      items = data; // Direct array
+    } else {
+      throw new Error('Unknown JSON format');
+    }
+
+    this.posts = items
+      .slice(0, maxPosts)
       .map(item => {
-        const title = item.title || 'No title';
-        const date = item.pubDate ? this.formatDate(new Date(item.pubDate)) : 'No date';
-        const link = item.link || item.guid || '#';
+        const title = this.stripHtml(item.title || item.title_detail?.value || 'No title').trim();
+        
+        // Handle different date formats
+        let date = 'No date';
+        const pubDate = item.pubDate || item.published || item.date_published || item.updated;
+        if (pubDate) {
+          date = this.formatDate(new Date(pubDate));
+        }
+
+        // Handle different link formats  
+        let link = item.link || item.url || item.guid || '#';
+        if (typeof link === 'object') {
+          link = link.href || link.url || '#';
+        }
 
         return {
           domain,
           date,
-          title: title.trim(),
-          link
+          title,
+          link: link.trim()
         };
-      });
+      })
+      .filter(post => post.title !== 'No title' && post.title.length > 3);
+
+    if (this.posts.length === 0) {
+      this.showMessage('No posts found', '#dc3545');
+      return;
+    }
+
+    console.log(`📰 Loaded ${this.posts.length} posts from ${domain}`);
     this.updateTickerContent();
   }
 
-  parseRSSFeed(xmlDoc, rssUrl) {
-    const domain = this.extractDomain(rssUrl);
-
-    let items = xmlDoc.querySelectorAll('item');
-    if (items.length === 0) {
-      items = xmlDoc.querySelectorAll('entry');
-    }
-
-    const maxPosts = parseInt(this.getAttribute('max-posts'));
-    const limit = isNaN(maxPosts) ? Infinity : maxPosts;
-
-    this.posts = Array.from(items)
-      .slice(0, limit)
-      .map(item => {
-        const title = item.querySelector('title')?.textContent || 'No title';
-        const pubDateElement = item.querySelector('pubDate') || item.querySelector('published');
-        const pubDate = pubDateElement?.textContent;
-        const date = pubDate ? this.formatDate(new Date(pubDate)) : 'No date';
-        const linkElement = item.querySelector('link') || item.querySelector('guid');
-        const link = linkElement?.textContent || linkElement?.getAttribute('href') || '#';
-
-        return {
-          domain,
-          date,
-          title: title.trim(),
-          link
-        };
-      });
-    this.updateTickerContent();
+  stripHtml(html) {
+    if (!html) return '';
+    const tmp = document.createElement('div');
+    tmp.innerHTML = html;
+    return tmp.textContent || tmp.innerText || '';
   }
 
   extractDomain(url) {
     try {
       const urlObj = new URL(url);
-      return urlObj.hostname.replace(/^(www\.|rss\.)/, '');
+      return urlObj.hostname.replace(/^(www\.|rss\.|feeds\.|api\.)/, '');
     } catch {
       return 'Unknown';
     }
@@ -214,8 +245,9 @@ class RSSTickerElement extends HTMLElement {
     if (ticker) {
       ticker.textContent = message;
       ticker.style.color = color;
-      this.posts = [];
-      this.updateTickerContent();
+      ticker.style.animation = 'none';
+      ticker.style.transform = 'translateX(0)';
+      this.lastMeasuredCycleWidth = 0;
     }
   }
 
@@ -223,36 +255,33 @@ class RSSTickerElement extends HTMLElement {
     const separator = this.getAttribute('separator') || '|';
     const tickerContent = this.shadowRoot.querySelector('.ticker-content');
 
-    if (!tickerContent) {
-      return;
-    }
-
-    if (this.posts.length === 0) {
-      if (!tickerContent.textContent.includes('Loading') && !tickerContent.textContent.includes('Failed')) {
-        tickerContent.textContent = 'No content available.';
-        tickerContent.style.color = '#6c757d';
-      }
-      tickerContent.style.animation = 'none';
-      tickerContent.style.transform = 'translateX(0)';
-      this.lastMeasuredCycleWidth = 0; // Reset width
+    if (!tickerContent || this.posts.length === 0) {
       return;
     }
 
     const postHtml = this.posts
-      .map((post, index) => `<a href="${post.link}" target="_blank" rel="noopener" class="post-link" data-index="${index}"><span class="post-domain">${post.domain}</span><span class="post-date">${post.date}</span><span class="post-title">${post.title}</span></a>`)
+      .map((post, index) => {
+        let safeLink = post.link;
+        if (safeLink !== '#' && !safeLink.startsWith('http')) {
+          safeLink = `https://${safeLink}`;
+        }
+        
+        return `<a href="${safeLink}" target="_blank" rel="noopener" class="post-link">
+          <span class="post-domain">${post.domain}</span>
+          <span class="post-date">${post.date}</span>
+          <span class="post-title">${post.title}</span>
+        </a>`;
+      })
       .join(`<span class="separator">${separator}</span>`);
 
-    // Duplicate the content three times for seamless looping
-    // ORIGINAL_SET + SEPARATOR + ORIGINAL_SET + SEPARATOR + ORIGINAL_SET
-    const fullContentHtml = `${postHtml}<span class="separator">${separator}</span>${postHtml}<span class="separator">${separator}</span>${postHtml}`;
-    tickerContent.innerHTML = fullContentHtml;
+    // Triple content for seamless loop
+    const fullContent = `${postHtml}<span class="separator">${separator}</span>${postHtml}<span class="separator">${separator}</span>${postHtml}`;
+    tickerContent.innerHTML = fullContent;
     tickerContent.style.color = this.getAttribute('title-color') || '#333';
 
-    // Clear previous animation and transform to allow for accurate measurement
     tickerContent.style.animation = 'none';
     tickerContent.style.transform = 'translateX(0)';
 
-    // Request animation frame to ensure DOM is updated before measuring
     requestAnimationFrame(() => {
       this.startAnimation();
     });
@@ -266,13 +295,22 @@ class RSSTickerElement extends HTMLElement {
       return;
     }
 
-    // *** Crucial: Measure the precise width of ONE full, unique set of content ***
+    // Measure one cycle width
     const separator = this.getAttribute('separator') || '|';
     const postHtml = this.posts
-      .map((post, index) => `<a href="${post.link}" target="_blank" rel="noopener" class="post-link" data-index="${index}"><span class="post-domain">${post.domain}</span><span class="post-date">${post.date}</span><span class="post-title">${post.title}</span></a>`)
+      .map(post => {
+        let safeLink = post.link;
+        if (safeLink !== '#' && !safeLink.startsWith('http')) {
+          safeLink = `https://${safeLink}`;
+        }
+        return `<a href="${safeLink}" target="_blank" rel="noopener" class="post-link">
+          <span class="post-domain">${post.domain}</span>
+          <span class="post-date">${post.date}</span>
+          <span class="post-title">${post.title}</span>
+        </a>`;
+      })
       .join(`<span class="separator">${separator}</span>`);
 
-    // Temporarily append one full unique content string to accurately measure its width
     const tempDiv = document.createElement('div');
     tempDiv.style.cssText = `
         position: absolute;
@@ -281,71 +319,45 @@ class RSSTickerElement extends HTMLElement {
         font-family: ${this.getComputedStyleValue('font-family')};
         font-weight: ${this.getComputedStyleValue('font-weight')};
         font-size: ${this.getComputedStyleValue('font-size')};
-        /* Inherit or explicitly set styles that affect width */
-        padding: 0;
-        margin: 0;
-        line-height: 1.4; /* Ensure consistency with .ticker-content */
+        line-height: 1.4;
     `;
-    tempDiv.innerHTML = `${postHtml}<span class="separator">${separator}</span>`; // One full cycle including the trailing separator
+    tempDiv.innerHTML = `${postHtml}<span class="separator">${separator}</span>`;
 
     this.shadowRoot.appendChild(tempDiv);
-    const cycleWidth = tempDiv.offsetWidth; // Use offsetWidth for accurate layout width
+    const cycleWidth = tempDiv.offsetWidth;
     this.shadowRoot.removeChild(tempDiv);
 
-    if (cycleWidth === 0) {
-      // If cycleWidth is 0, it means content is empty or not rendered correctly.
-      // Stop animation and return.
-      if (this.animationId) {
-        cancelAnimationFrame(this.animationId);
-      }
-      content.style.animation = 'none';
-      content.style.transform = 'translateX(0)';
-      this.lastMeasuredCycleWidth = 0;
-      return;
-    }
+    if (cycleWidth === 0) return;
 
-    this.lastMeasuredCycleWidth = cycleWidth; // Store for resize observer check
+    this.lastMeasuredCycleWidth = cycleWidth;
 
-    const speedValue = parseInt(this.getAttribute('speed')) || 5;
-    const clampedSpeed = Math.max(1, Math.min(10, speedValue));
-
-    // Calculate duration based on cycleWidth and speed.
-    // Higher constant for slower animation (more time per pixel).
-    // duration = (distance / speed_pixels_per_second)
-    const pixelsPerSecondAtSpeed1 = 25; // Adjust this value to control overall speed
-    const duration = cycleWidth / (clampedSpeed * pixelsPerSecondAtSpeed1);
+    const speed = Math.max(1, Math.min(10, parseInt(this.getAttribute('speed')) || 5));
+    const duration = cycleWidth / (speed * 50); // Faster base speed
 
     const styleEl = this.shadowRoot.querySelector('style');
     if (styleEl) {
-      const newKeyframes = `
+      const keyframes = `
         @keyframes scroll-dynamic {
           0% { transform: translateX(0); }
           100% { transform: translateX(-${cycleWidth}px); }
         }
       `;
-      // Use a unique name if you have other keyframes to prevent conflicts
-      const currentStyleContent = styleEl.textContent;
+      const currentStyle = styleEl.textContent;
       const keyframesRegex = /@keyframes scroll-dynamic \{[^}]*\}/s;
-      if (keyframesRegex.test(currentStyleContent)) {
-        styleEl.textContent = currentStyleContent.replace(keyframesRegex, newKeyframes);
+      if (keyframesRegex.test(currentStyle)) {
+        styleEl.textContent = currentStyle.replace(keyframesRegex, keyframes);
       } else {
-        styleEl.textContent += newKeyframes;
+        styleEl.textContent += keyframes;
       }
     }
 
-    // Apply the animation
     content.style.animation = `scroll-dynamic ${duration}s linear infinite`;
-    // Ensure initial state is 0, though keyframes 0% rule handles this
     content.style.transform = 'translateX(0)';
   }
 
-  // Helper to get computed styles for the temporary measurement div
   getComputedStyleValue(prop) {
     const content = this.shadowRoot.querySelector('.ticker-content');
-    if (content) {
-      return getComputedStyle(content)[prop];
-    }
-    return '';
+    return content ? getComputedStyle(content)[prop] : '';
   }
 
   updateStyles() {
@@ -366,6 +378,7 @@ class RSSTickerElement extends HTMLElement {
     const fontSize = this.getAttribute('font-size') || '14px';
 
     const finalFontFamily = googleFont ? `"${googleFont}", ${fontFamily}` : fontFamily;
+    
     return `
       :host {
         display: block;
@@ -378,7 +391,7 @@ class RSSTickerElement extends HTMLElement {
         white-space: nowrap;
         overflow: hidden;
         position: relative;
-        min-height: 1.6em; /* Ensure some height even if content is empty */
+        min-height: 1.6em;
         height: auto;
         display: flex;
         align-items: center;
@@ -392,11 +405,9 @@ class RSSTickerElement extends HTMLElement {
         color: ${titleColor};
         will-change: transform;
         white-space: nowrap;
-        transform: translateX(0); /* Ensure initial state is 0 */
-        text-shadow: none;
+        transform: translateX(0);
       }
-      .ticker-container:hover .ticker-content,
-      .ticker-content:hover {
+      .ticker-container:hover .ticker-content {
         animation-play-state: paused !important;
       }
       .post-link {
@@ -411,7 +422,6 @@ class RSSTickerElement extends HTMLElement {
       }
       .post-title {
         font-weight: bold;
-        font-size: ${fontSize};
         color: ${titleColor};
         margin-left: 1.2em;
       }
@@ -430,30 +440,28 @@ class RSSTickerElement extends HTMLElement {
         color: ${dateColor};
         font-weight: bold;
         margin: 0 2em;
-        font-size: ${fontSize};
       }
       @media (max-width: 768px) {
         :host {
           padding: 8px 0;
         }
-
         .ticker-content {
           font-size: calc(${fontSize} * 0.9);
         }
         .post-title {
-            margin-left: 0.8em;
+          margin-left: 0.8em;
         }
         .post-date {
-            margin-left: 0.8em;
+          margin-left: 0.8em;
         }
         .separator {
-            margin: 0 1.5em;
+          margin: 0 1.5em;
         }
       }
       @media (prefers-reduced-motion: reduce) {
         .ticker-content {
-          animation: none !important; /* Disable animation entirely */
-          transform: translateX(0) !important; /* Keep content static */
+          animation: none !important;
+          transform: translateX(0) !important;
         }
       }
     `;
