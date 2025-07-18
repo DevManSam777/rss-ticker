@@ -99,70 +99,202 @@ class RSSTickerElement extends HTMLElement {
     this.isLoading = true;
     this.showMessage('Loading...', '#007bff');
 
-    // Use reliable RSS-to-JSON services (like RSS.app does)
+    // Services that work with simple requests (no preflight)
     const services = [
       {
-        name: 'feed2json',
-        url: `https://www.toptal.com/developers/feed2json/convert?url=${encodeURIComponent(rssUrl)}`,
-        timeout: 6000
+        name: 'allorigins',
+        url: `https://api.allorigins.win/get?url=${encodeURIComponent(rssUrl)}`,
+        timeout: 4000,
+        parseXML: true
       },
       {
-        name: 'rss2json',
+        name: 'jsonp-proxy',
+        url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(rssUrl)}`,
+        timeout: 4000,
+        parseXML: true
+      },
+      {
+        name: 'proxy-api',
         url: `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`,
-        timeout: 8000
+        timeout: 4000,
+        parseXML: false
       }
     ];
 
-    for (const service of services) {
-      try {
-        console.log(`🚀 Trying ${service.name}...`);
-        
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), service.timeout);
-
-        const response = await fetch(service.url, {
-          signal: controller.signal,
-          headers: {
-            'Accept': 'application/json',
-            'User-Agent': 'RSS-Ticker/1.0'
-          }
-        });
-
-        clearTimeout(timeoutId);
-
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-
-        const data = await response.json();
-        
-        // Handle different service response formats
-        if (service.name === 'feed2json') {
-          this.parseJSONFeed(data, rssUrl);
-        } else if (service.name === 'rss2json') {
-          if (data.status === 'ok') {
-            this.parseJSONFeed(data, rssUrl);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      for (const service of services) {
+        try {
+          if (attempt > 0) {
+            console.log(`🔄 Retry attempt ${attempt + 1} with ${service.name}...`);
           } else {
-            throw new Error(data.message || 'RSS2JSON error');
+            console.log(`🚀 Trying ${service.name}...`);
           }
+          
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), service.timeout);
+
+          const response = await fetch(service.url, {
+            signal: controller.signal,
+            // NO CUSTOM HEADERS - they trigger CORS preflight
+            // Only use simple request headers to avoid preflight
+          });
+
+          clearTimeout(timeoutId);
+
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
+
+          let xmlData;
+          if (service.parseXML) {
+            if (service.name === 'allorigins') {
+              const json = await response.json();
+              if (!json.contents || json.contents.length < 100) {
+                throw new Error('AllOrigins returned empty content');
+              }
+              xmlData = json.contents;
+            } else {
+              xmlData = await response.text();
+              if (!xmlData || xmlData.length < 100) {
+                throw new Error('Empty or too short response');
+              }
+            }
+
+            // Validate it looks like XML/RSS
+            if (!xmlData.includes('<rss') && !xmlData.includes('<feed') && !xmlData.includes('<channel')) {
+              throw new Error('Response does not appear to be a valid RSS/XML feed');
+            }
+
+            this.parseXMLFeed(xmlData, rssUrl);
+          } else {
+            // Handle RSS2JSON response
+            const jsonData = await response.json();
+            if (jsonData.status !== 'ok') {
+              throw new Error(jsonData.message || 'RSS2JSON service error');
+            }
+            this.parseJSONFeed(jsonData, rssUrl);
+          }
+          console.log(`✅ SUCCESS with ${service.name}! Loaded ${this.posts.length} posts`);
+          this.isLoading = false;
+          return;
+
+        } catch (error) {
+          console.log(`❌ ${service.name} failed:`, error.message);
+          continue;
         }
-
-        console.log(`✅ Success with ${service.name}!`);
-        this.isLoading = false;
-        return;
-
-      } catch (error) {
-        console.log(`❌ ${service.name} failed:`, error.message);
       }
     }
 
     this.isLoading = false;
-    this.showMessage('Failed to load RSS feed', '#dc3545');
+    this.showMessage('All RSS services failed. Please check the feed URL.', '#dc3545');
+  }
+
+  parseXMLFeed(xmlString, rssUrl) {
+    try {
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(xmlString, 'text/xml');
+      
+      // Check for parsing errors
+      const parserError = xmlDoc.querySelector('parsererror');
+      if (parserError) {
+        throw new Error('Invalid XML format');
+      }
+
+      const domain = this.extractDomain(rssUrl);
+      const maxPosts = parseInt(this.getAttribute('max-posts')) || 10;
+      
+      // Try multiple RSS/Atom formats
+      let items = [];
+      
+      // RSS 2.0 format
+      items = Array.from(xmlDoc.querySelectorAll('rss > channel > item'));
+      
+      // RSS 1.0 / RDF format
+      if (items.length === 0) {
+        items = Array.from(xmlDoc.querySelectorAll('item'));
+      }
+      
+      // Atom format
+      if (items.length === 0) {
+        items = Array.from(xmlDoc.querySelectorAll('entry'));
+      }
+
+      if (items.length === 0) {
+        throw new Error('No feed items found in XML');
+      }
+
+      this.posts = items
+        .slice(0, maxPosts)
+        .map(item => {
+          let title = 'No title';
+          let date = 'No date';
+          let link = '#';
+
+          // Get title (try multiple selectors)
+          const titleEl = item.querySelector('title') || item.querySelector('title');
+          if (titleEl) {
+            title = this.stripHtml(titleEl.textContent || titleEl.textContent).trim();
+          }
+
+          // Get date (try multiple date fields)
+          const dateSelectors = ['pubDate', 'published', 'updated', 'dc\\:date', 'date'];
+          for (const selector of dateSelectors) {
+            const dateEl = item.querySelector(selector);
+            if (dateEl && dateEl.textContent) {
+              const pubDate = new Date(dateEl.textContent.trim());
+              if (!isNaN(pubDate.getTime())) {
+                date = this.formatDate(pubDate);
+                break;
+              }
+            }
+          }
+
+          // Get link (try multiple link formats)
+          const linkEl = item.querySelector('link');
+          if (linkEl) {
+            // RSS format: <link>url</link>
+            if (linkEl.textContent && linkEl.textContent.trim()) {
+              link = linkEl.textContent.trim();
+            }
+            // Atom format: <link href="url" />
+            else if (linkEl.getAttribute('href')) {
+              link = linkEl.getAttribute('href');
+            }
+          }
+
+          // Fallback to guid if no link found
+          if (link === '#') {
+            const guidEl = item.querySelector('guid');
+            if (guidEl && guidEl.textContent) {
+              link = guidEl.textContent.trim();
+            }
+          }
+
+          return {
+            domain,
+            date,
+            title,
+            link: link.trim()
+          };
+        })
+        .filter(post => post.title !== 'No title' && post.title.length > 3);
+
+      if (this.posts.length === 0) {
+        throw new Error('No valid posts found after filtering');
+      }
+
+      console.log(`📰 Parsed ${this.posts.length} posts from XML feed`);
+      this.updateTickerContent();
+
+    } catch (error) {
+      console.error('XML parsing failed:', error);
+      throw new Error(`XML parsing failed: ${error.message}`);
+    }
   }
 
   parseJSONFeed(data, rssUrl) {
     const domain = this.extractDomain(rssUrl);
-    const maxPosts = parseInt(this.getAttribute('max-posts')) || 15;
+    const maxPosts = parseInt(this.getAttribute('max-posts')) || 10;
 
     let items = [];
     
@@ -205,8 +337,7 @@ class RSSTickerElement extends HTMLElement {
       .filter(post => post.title !== 'No title' && post.title.length > 3);
 
     if (this.posts.length === 0) {
-      this.showMessage('No posts found', '#dc3545');
-      return;
+      throw new Error('No posts found');
     }
 
     console.log(`📰 Loaded ${this.posts.length} posts from ${domain}`);
@@ -332,7 +463,7 @@ class RSSTickerElement extends HTMLElement {
     this.lastMeasuredCycleWidth = cycleWidth;
 
     const speed = Math.max(1, Math.min(10, parseInt(this.getAttribute('speed')) || 5));
-    const duration = cycleWidth / (speed * 25); 
+    const duration = cycleWidth / (speed * 25); // Faster base speed
 
     const styleEl = this.shadowRoot.querySelector('style');
     if (styleEl) {
