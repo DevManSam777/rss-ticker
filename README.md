@@ -2,7 +2,7 @@
 
 A web component that displays RSS feeds as a scrolling ticker.
 
- ![rss ticker example](rss_ticker.gif)
+ ![rss ticker example](rss-ticker.gif)
 
 ## Features
 
