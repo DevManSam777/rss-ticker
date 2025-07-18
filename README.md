@@ -19,11 +19,15 @@ A web component that displays RSS feeds as a scrolling ticker.
 
 ## Usage
 
-Include the component and add it to your HTML:
+Import the web component in your HTML head section:
 
 ```html
-<script src="rss-ticker.js"></script>
+<script src="https://raw.githack.com/DevManSam777/rss-ticker/main/rss-ticker.js"></script>
 
+```
+
+Add the web component in your HTML body where you would like it to be displayed
+```html
 <rss-ticker rss-url="https://your-blog.com/rss.xml"></rss-ticker>
 ```
 
