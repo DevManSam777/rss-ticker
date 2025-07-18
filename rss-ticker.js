@@ -100,26 +100,22 @@ class RSSTickerElement extends HTMLElement {
     this.showMessage('Loading...', '#007bff');
 
     // Fast services with aggressive timeouts
-    const services = [
-      {
-        name: 'allorigins',
-        url: `https://api.allorigins.win/get?url=${encodeURIComponent(rssUrl)}`,
-        timeout: 2500,
-        parseXML: true
-      },
-      {
-        name: 'jsonp-proxy',
-        url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(rssUrl)}`,
-        timeout: 2000,
-        parseXML: true
-      },
-      {
-        name: 'proxy-api',
-        url: `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`,
-        timeout: 2000,
-        parseXML: false
-      }
-    ];
+    const services = [{
+      name: 'allorigins',
+      url: `https://api.allorigins.win/get?url=${encodeURIComponent(rssUrl)}`,
+      timeout: 2500,
+      parseXML: true
+    }, {
+      name: 'jsonp-proxy',
+      url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(rssUrl)}`,
+      timeout: 2000,
+      parseXML: true
+    }, {
+      name: 'proxy-api',
+      url: `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`,
+      timeout: 2000,
+      parseXML: false
+    }];
 
     for (let attempt = 0; attempt < 2; attempt++) {
       for (const service of services) {
@@ -129,7 +125,7 @@ class RSSTickerElement extends HTMLElement {
           } else {
             console.log(`🚀 Trying ${service.name}...`);
           }
-          
+
           const controller = new AbortController();
           const timeoutId = setTimeout(() => controller.abort(), service.timeout);
 
@@ -193,7 +189,7 @@ class RSSTickerElement extends HTMLElement {
     try {
       const parser = new DOMParser();
       const xmlDoc = parser.parseFromString(xmlString, 'text/xml');
-      
+
       // Check for parsing errors
       const parserError = xmlDoc.querySelector('parsererror');
       if (parserError) {
@@ -201,19 +197,21 @@ class RSSTickerElement extends HTMLElement {
       }
 
       const domain = this.extractDomain(rssUrl);
-      const maxPosts = parseInt(this.getAttribute('max-posts')) || 10;
-      
+      // Get maxPosts, if not a valid number, set to Infinity
+      const maxPostsAttr = this.getAttribute('max-posts');
+      const maxPosts = (maxPostsAttr && !isNaN(parseInt(maxPostsAttr))) ? parseInt(maxPostsAttr) : Infinity;
+
       // Try multiple RSS/Atom formats
       let items = [];
-      
+
       // RSS 2.0 format
       items = Array.from(xmlDoc.querySelectorAll('rss > channel > item'));
-      
+
       // RSS 1.0 / RDF format
       if (items.length === 0) {
         items = Array.from(xmlDoc.querySelectorAll('item'));
       }
-      
+
       // Atom format
       if (items.length === 0) {
         items = Array.from(xmlDoc.querySelectorAll('entry'));
@@ -294,10 +292,12 @@ class RSSTickerElement extends HTMLElement {
 
   parseJSONFeed(data, rssUrl) {
     const domain = this.extractDomain(rssUrl);
-    const maxPosts = parseInt(this.getAttribute('max-posts')) || 10;
+    // Get maxPosts, if not a valid number, set to Infinity
+    const maxPostsAttr = this.getAttribute('max-posts');
+    const maxPosts = (maxPostsAttr && !isNaN(parseInt(maxPostsAttr))) ? parseInt(maxPostsAttr) : Infinity;
 
     let items = [];
-    
+
     // Handle different JSON formats
     if (data.items) {
       items = data.items; // RSS2JSON format
@@ -313,7 +313,7 @@ class RSSTickerElement extends HTMLElement {
       .slice(0, maxPosts)
       .map(item => {
         const title = this.stripHtml(item.title || item.title_detail?.value || 'No title').trim();
-        
+
         // Handle different date formats
         let date = 'No date';
         const pubDate = item.pubDate || item.published || item.date_published || item.updated;
@@ -321,7 +321,7 @@ class RSSTickerElement extends HTMLElement {
           date = this.formatDate(new Date(pubDate));
         }
 
-        // Handle different link formats  
+        // Handle different link formats      
         let link = item.link || item.url || item.guid || '#';
         if (typeof link === 'object') {
           link = link.href || link.url || '#';
@@ -396,7 +396,7 @@ class RSSTickerElement extends HTMLElement {
         if (safeLink !== '#' && !safeLink.startsWith('http')) {
           safeLink = `https://${safeLink}`;
         }
-        
+
         return `<a href="${safeLink}" target="_blank" rel="noopener" class="post-link">
           <span class="post-domain">${post.domain}</span>
           <span class="post-date">${post.date}</span>
@@ -509,7 +509,7 @@ class RSSTickerElement extends HTMLElement {
     const fontSize = this.getAttribute('font-size') || '14px';
 
     const finalFontFamily = googleFont ? `"${googleFont}", ${fontFamily}` : fontFamily;
-    
+
     return `
       :host {
         display: block;
