@@ -9,9 +9,9 @@ class RSSTickerElement extends HTMLElement {
     this.resizeObserver = null;
     this.lastMeasuredCycleWidth = 0;
     this.isLoading = false;
-    this._fetchPromise = null;
+    this._fetchPromise = null; // Stores the promise of the current fetch operation
     this.resizeTimeout = null;
-    this._fetchDebounceTimeout = null;
+    this._fetchDebounceTimeout = null; // For debouncing fetchRSSFeed calls
   }
 
   static get observedAttributes() {
@@ -32,9 +32,10 @@ class RSSTickerElement extends HTMLElement {
   }
 
   connectedCallback() {
+    console.log('Component connectedCallback triggered.'); // Log when connectedCallback runs
     this.loadGoogleFont();
     this.render();
-    // Debounce the initial fetch as well, in case connectedCallback is called multiple times
+    // Debounce the initial fetch. This is crucial if connectedCallback fires multiple times.
     this.debouncedFetchRSSFeed();
 
     this.resizeObserver = new ResizeObserver(entries => {
@@ -64,7 +65,8 @@ class RSSTickerElement extends HTMLElement {
       clearTimeout(this._fetchDebounceTimeout);
     }
     this.isLoading = false;
-    this._fetchPromise = null;
+    this._fetchPromise = null; // Clear the promise on disconnect
+    console.log('Component disconnectedCallback triggered.');
   }
 
   attributeChangedCallback(name, oldValue, newValue) {
@@ -88,7 +90,6 @@ class RSSTickerElement extends HTMLElement {
     const fontName = this.getAttribute('google-font');
     if (!fontName) return;
     const weight = this.getAttribute('font-weight') || '400';
-    // Prevent adding duplicate font links
     const existingLink = document.head.querySelector(`link[href*="${fontName.replace(' ', '+')}"]`);
 
     if (existingLink) return;
@@ -101,8 +102,21 @@ class RSSTickerElement extends HTMLElement {
 
   /**
    * Debounces calls to fetchRSSFeed to prevent excessive requests.
+   * Also checks if a fetch is already in progress before scheduling.
    */
   debouncedFetchRSSFeed() {
+    const rssUrl = this.getAttribute('rss-url');
+    if (!rssUrl) {
+      this.showMessage('No RSS URL provided');
+      return;
+    }
+
+    // If a fetch is already in progress for this URL, do not schedule a new one.
+    if (this.isLoading && this._fetchPromise) {
+        console.log('Debounced fetch skipped: A fetch is already in progress or recently completed.');
+        return;
+    }
+
     if (this._fetchDebounceTimeout) {
       clearTimeout(this._fetchDebounceTimeout);
     }
@@ -123,9 +137,10 @@ class RSSTickerElement extends HTMLElement {
       return;
     }
 
-    // If a fetch is already in progress, return the existing promise
+    // Crucial check: If a fetch is already in progress or has just completed, return its promise.
+    // This prevents redundant fetches if fetchRSSFeed is called multiple times quickly.
     if (this.isLoading && this._fetchPromise) {
-      console.log('Fetch already in progress, waiting for existing fetch to complete.');
+      console.log('FetchRSSFeed: An active fetch promise exists, returning it.');
       return this._fetchPromise;
     }
 
@@ -135,29 +150,39 @@ class RSSTickerElement extends HTMLElement {
       console.log('✅ Loaded from cache:', rssUrl);
       this.posts = cachedData;
       this.updateTickerContent();
-      return; // Exit if cached data is found and valid
+      this.isLoading = false; // Ensure loading state is reset
+      this._fetchPromise = Promise.resolve(); // Create a resolved promise to signal completion
+      return this._fetchPromise; // Exit if cached data is found and valid
     }
 
     this.isLoading = true;
     this.showMessage('Loading...', '#007bff');
     this.posts = []; // Clear previous posts immediately
 
-    const services = [{
+    let services = [{
       name: 'allorigins',
       url: `https://api.allorigins.win/get?url=${encodeURIComponent(rssUrl)}`,
-      timeout: 3000,
+      timeout: 3500, // Slightly increased timeout
       parseXML: true
     }, {
       name: 'jsonp-proxy',
       url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(rssUrl)}`,
-      timeout: 2500,
+      timeout: 3000, // Slightly increased timeout
       parseXML: true
-    }, {
-      name: 'rss2json',
-      url: `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`,
-      timeout: 2500,
-      parseXML: false
     }];
+
+    // NEW: Conditionally add rss2json based on the RSS URL
+    const HASHNODE_URL = 'https://blog.devmansam.net/rss.xml';
+    if (rssUrl !== HASHNODE_URL) {
+        services.push({
+            name: 'rss2json',
+            url: `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`,
+            timeout: 3000,
+            parseXML: false
+        });
+    } else {
+        console.log(`Skipping rss2json for ${this.extractDomain(rssUrl)} due to known incompatibility (HTTP 422).`);
+    }
 
     let success = false;
     let errors = [];
@@ -190,7 +215,7 @@ class RSSTickerElement extends HTMLElement {
       }
 
       this.isLoading = false;
-      this._fetchPromise = null; // Clear the promise
+      this._fetchPromise = null; // Clear the promise once all attempts are done
 
       if (success) {
         console.log(`✅ SUCCESS! Loaded ${this.posts.length} posts for ${rssUrl}`);
@@ -262,7 +287,7 @@ class RSSTickerElement extends HTMLElement {
           }
           rawData = json.contents;
 
-          // NEW: Handle data: URI returned by allorigins
+          // Handle data: URI returned by allorigins
           if (rawData.startsWith('data:')) {
               const parts = rawData.split(',');
               if (parts.length > 1) {
@@ -412,7 +437,9 @@ class RSSTickerElement extends HTMLElement {
           if (linkEl) {
             if (linkEl.textContent && linkEl.textContent.trim()) {
               link = linkEl.textContent.trim();
-            } else if (linkEl.getAttribute('href')) {
+            }
+            // Atom format: <link href="url" />
+            else if (linkEl.getAttribute('href')) {
               link = linkEl.getAttribute('href');
             }
           }
