@@ -11,7 +11,7 @@ A web component that displays RSS feeds as a scrolling ticker.
 - Hover to pause functionality
 - Clickable articles that open in new tabs
 - Fully customizable styling (colors, fonts, separator)
-- Smart font hierarchy (titles larger, dates/domains smaller)
+- Smart font hierarchy (titles larger, dates/domains smaller (80%))
 - Edge-to-edge display with no margins
 - Multi-proxy CORS support with automatic failover
 - Intelligent caching system (30-minute localStorage cache)
