@@ -9,9 +9,9 @@ class RSSTickerElement extends HTMLElement {
     this.resizeObserver = null;
     this.lastMeasuredCycleWidth = 0;
     this.isLoading = false;
-    this._fetchPromise = null; // Stores the promise of the current fetch operation
+    this._fetchPromise = null; 
     this.resizeTimeout = null;
-    this._fetchDebounceTimeout = null; // For debouncing fetchRSSFeed calls
+    this._fetchDebounceTimeout = null; 
   }
 
   static get observedAttributes() {
@@ -32,7 +32,7 @@ class RSSTickerElement extends HTMLElement {
   }
 
   connectedCallback() {
-    console.log('Component connectedCallback triggered.'); // Log when connectedCallback runs
+    console.log('Component connectedCallback triggered.'); 
     this.loadGoogleFont();
     this.render();
     // Debounce the initial fetch. This is crucial if connectedCallback fires multiple times.
@@ -100,10 +100,7 @@ class RSSTickerElement extends HTMLElement {
     document.head.appendChild(link);
   }
 
-  /**
-   * Debounces calls to fetchRSSFeed to prevent excessive requests.
-   * Also checks if a fetch is already in progress before scheduling.
-   */
+  // Debounces calls to fetchRSSFeed to prevent excessive requests.
   debouncedFetchRSSFeed() {
     const rssUrl = this.getAttribute('rss-url');
     if (!rssUrl) {
@@ -122,14 +119,12 @@ class RSSTickerElement extends HTMLElement {
     }
     this._fetchDebounceTimeout = setTimeout(() => {
       this.fetchRSSFeed();
-    }, 100); // Small debounce time to group rapid attribute changes
+    }, 100); 
   }
 
 
-  /**
-   * Fetches the RSS feed using multiple proxy services in parallel.
-   * Prioritizes the fastest successful response. Includes caching.
-   */
+  // Fetches the RSS feed using multiple proxy services in parallel.  Prioritizes the fastest successful response. Includes caching.
+  
   async fetchRSSFeed() {
     const rssUrl = this.getAttribute('rss-url');
     if (!rssUrl) {
@@ -137,7 +132,6 @@ class RSSTickerElement extends HTMLElement {
       return;
     }
 
-    // Crucial check: If a fetch is already in progress or has just completed, return its promise.
     // This prevents redundant fetches if fetchRSSFeed is called multiple times quickly.
     if (this.isLoading && this._fetchPromise) {
       console.log('FetchRSSFeed: An active fetch promise exists, returning it.');
@@ -159,30 +153,23 @@ class RSSTickerElement extends HTMLElement {
     this.showMessage('Loading...', '#007bff');
     this.posts = []; // Clear previous posts immediately
 
-    let services = [{
+    // Define all proxy services. No hardcoding specific URLs.
+    const services = [{
       name: 'allorigins',
       url: `https://api.allorigins.win/get?url=${encodeURIComponent(rssUrl)}`,
-      timeout: 3500, // Slightly increased timeout
+      timeout: 3500, 
       parseXML: true
     }, {
       name: 'jsonp-proxy',
       url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(rssUrl)}`,
-      timeout: 3000, // Slightly increased timeout
+      timeout: 3000, 
       parseXML: true
+    }, {
+      name: 'rss2json', // This proxy is now always included
+      url: `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`,
+      timeout: 3000,
+      parseXML: false
     }];
-
-    // NEW: Conditionally add rss2json based on the RSS URL
-    const HASHNODE_URL = 'https://blog.devmansam.net/rss.xml';
-    if (rssUrl !== HASHNODE_URL) {
-        services.push({
-            name: 'rss2json',
-            url: `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`,
-            timeout: 3000,
-            parseXML: false
-        });
-    } else {
-        console.log(`Skipping rss2json for ${this.extractDomain(rssUrl)} due to known incompatibility (HTTP 422).`);
-    }
 
     let success = false;
     let errors = [];
@@ -196,7 +183,7 @@ class RSSTickerElement extends HTMLElement {
       } catch (error) {
         // This catch block will only be hit if the *first* promise to settle in the race rejects.
         // It doesn't mean all failed, just that the first one to finish failed.
-        // We'll proceed to sequential fallback for more detailed logging/attempts.
+        // Proceed to sequential fallback for more detailed attempts.
         console.log("Initial service race failed. Trying sequential fallback.");
       }
 
@@ -230,20 +217,14 @@ class RSSTickerElement extends HTMLElement {
     return this._fetchPromise; // Return the promise for external chaining if needed
   }
 
-  /**
-   * Attempts to fetch from a service with a specified number of retries.
-   * @param {Object} service - The service configuration.
-   * @param {string} rssUrl - The original RSS feed URL.
-   * @param {number} retriesLeft - Number of retries remaining.
-   * @returns {Promise<boolean>} Resolves true on success, rejects on failure after all retries.
-   */
+  // Attempts to fetch from a service with a specified number of retries.
   async fetchServiceWithRetries(service, rssUrl, retriesLeft) {
     try {
       return await this.fetchService(service, rssUrl);
     } catch (error) {
       if (retriesLeft > 0) {
         console.log(`🔄 Retrying ${service.name} for ${this.extractDomain(rssUrl)} (${retriesLeft} retries left)...`);
-        await new Promise(resolve => setTimeout(resolve, 500)); // Small delay before retry
+        await new Promise(resolve => setTimeout(resolve, 500)); 
         return this.fetchServiceWithRetries(service, rssUrl, retriesLeft - 1);
       } else {
         throw error; // No retries left, re-throw the error
@@ -251,10 +232,8 @@ class RSSTickerElement extends HTMLElement {
     }
   }
 
-  /**
-   * Helper function to fetch from a single service.
-   * Includes improved error logging for non-XML/JSON content and data: URI handling.
-   */
+  // Helper function to fetch from a single service.
+  
   async fetchService(service, rssUrl) {
     console.log(`🚀 Trying ${service.name} for ${this.extractDomain(rssUrl)}...`);
     const controller = new AbortController();
@@ -329,7 +308,7 @@ class RSSTickerElement extends HTMLElement {
           console.warn(`RSS2JSON service error for ${rssUrl}. Message:`, jsonData.message, 'Full response:', jsonData);
           throw new Error(jsonData.message || 'RSS2JSON service error');
         }
-        this.parseJSONFeed(jsonData, rssUrl);
+        this.parseJSONFeed(jsonData, jsonData, rssUrl); // Pass jsonData twice, first for data, second for original response for context
       }
       console.log(`✅ SUCCESS with ${service.name} for ${this.extractDomain(rssUrl)}!`);
       return true;
@@ -419,7 +398,7 @@ class RSSTickerElement extends HTMLElement {
             title = this.stripHtml(titleEl.textContent || '').trim();
           }
 
-          // Extract date from various common date fields
+          // Get date (try multiple date fields)
           const dateSelectors = ['pubDate', 'published', 'updated', 'dc\\:date', 'date'];
           for (const selector of dateSelectors) {
             const dateEl = item.querySelector(selector);
@@ -432,9 +411,10 @@ class RSSTickerElement extends HTMLElement {
             }
           }
 
-          // Extract link, handling RSS <link>text</link> and Atom <link href="attr"/>
+          // Get link (try multiple link formats)
           const linkEl = item.querySelector('link');
           if (linkEl) {
+            // RSS format: <link>url</link>
             if (linkEl.textContent && linkEl.textContent.trim()) {
               link = linkEl.textContent.trim();
             }
@@ -473,13 +453,12 @@ class RSSTickerElement extends HTMLElement {
     }
   }
 
-  parseJSONFeed(data, rssUrl) {
+  parseJSONFeed(data, originalResponseData, rssUrl) { // Added originalResponseData for more context
     const domain = this.extractDomain(rssUrl);
     const maxPostsAttr = this.getAttribute('max-posts');
     const maxPosts = (maxPostsAttr && !isNaN(parseInt(maxPostsAttr))) ? parseInt(maxPostsAttr) : Infinity;
 
     let items = [];
-    // Handle different JSON feed formats (e.g., RSS2JSON, JSON Feed)
     if (data.items) {
       items = data.items;
     } else if (data.entries) {
@@ -487,6 +466,7 @@ class RSSTickerElement extends HTMLElement {
     } else if (Array.isArray(data)) {
       items = data;
     } else {
+      console.warn('Unknown JSON format. Full response data:', originalResponseData); // Log full response for unknown format
       throw new Error('Unknown JSON format');
     }
 
@@ -672,7 +652,6 @@ class RSSTickerElement extends HTMLElement {
         // Replace existing keyframes
         styleEl.textContent = currentStyle.replace(keyframesRegex, keyframes);
       } else {
-        // Add new keyframes
         styleEl.textContent += keyframes;
       }
     }
@@ -815,5 +794,4 @@ class RSSTickerElement extends HTMLElement {
   }
 }
 
-// Define the custom element
 customElements.define('rss-ticker', RSSTickerElement);
