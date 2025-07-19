@@ -10,7 +10,7 @@ A web component that displays RSS feeds as a scrolling ticker.
 - Intuitive speed control (1-10 scale)
 - Hover to pause functionality
 - Clickable articles that open in new tabs
-- Fully customizable styling (colors, fonts, spacing)
+- Fully customizable styling (colors, fonts, seperator)
 - Smart font hierarchy (titles larger, dates/domains smaller)
 - Edge-to-edge display with no margins
 - Multi-proxy CORS support with automatic failover
