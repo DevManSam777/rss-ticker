@@ -13,11 +13,40 @@ A web component that displays RSS feeds as a scrolling ticker.
 - Fully customizable styling (colors, fonts, spacing)
 - Smart font hierarchy (titles larger, dates/domains smaller)
 - Edge-to-edge display with no margins
-- CORS proxy support for accessing RSS feeds
+- Multi-proxy CORS support with automatic failover
+- Intelligent caching system (30-minute localStorage cache)
+- Smart retry logic with parallel service racing
+- Debounced loading prevents redundant network requests
 - Responsive design with mobile optimizations
-- Multiple feed formats (RSS 2.0, Atom)
+- Multiple feed formats (RSS 2.0, RSS 1.0/RDF, Atom)
 - Google Fonts integration
 - Accessibility friendly with reduced motion support
+- Dynamic animation optimization for smooth performance
+
+## Reliability Features
+
+The component uses a sophisticated multi-proxy architecture to ensure maximum RSS feed loading reliability:
+
+- **Parallel Service Racing**: Attempts to load from multiple CORS proxy services simultaneously
+- **Automatic Retries**: Each service retries failed attempts with exponential backoff
+- **Sequential Fallback**: If parallel attempts fail, tries services one by one as backup
+- **Smart Caching**: Successful responses are cached for 30 minutes to reduce server load
+- **Graceful Error Handling**: Displays user-friendly error messages when all services fail
+
+### Supported Proxy Services
+
+- AllOrigins (with base64 decoding support)
+- CodeTabs Proxy (fast RSS processing)
+- RSS2JSON (JSON conversion service)
+
+## Feed Format Support
+
+The component automatically detects and parses multiple RSS/Atom feed formats:
+
+- **RSS 2.0**: Standard RSS feeds (`<rss><channel><item>`)
+- **RSS 1.0/RDF**: Resource Description Framework feeds (`<item>`)
+- **Atom**: Modern XML web feeds (`<entry>`)
+- **Custom JSON**: Via RSS2JSON service conversion
 
 ## Usage
 
@@ -78,6 +107,37 @@ The `font-size` attribute controls the size of article titles and separators. Do
     background-color="white">
 </rss-ticker>
 ```
+
+## Performance Optimizations
+
+- **Smart Loading**: Prevents unnecessary network requests when settings change
+- **Smooth Animations**: Automatically adjusts animation speed based on content length
+- **Responsive Updates**: Efficiently handles window resizing without lag
+- **Browser Optimization**: Uses modern web standards for smooth scrolling performance
+
+## Accessibility
+
+- **Reduced Motion**: Automatically respects `prefers-reduced-motion` user setting
+- **Semantic HTML**: Proper link structure with `rel="noopener"` for security
+- **Keyboard Navigation**: Full keyboard accessibility support
+- **Color Contrast**: Default colors meet accessibility guidelines
+- **Mobile Responsive**: Touch-friendly interactions and optimized spacing
+
+## Caching Behavior
+
+The component implements intelligent caching to improve performance:
+
+- **Cache Duration**: 30 minutes for successful RSS feed responses
+- **Cache Key**: Base64 encoded RSS URL for safe localStorage keys
+- **Automatic Cleanup**: Expired and corrupted cache entries are automatically removed
+- **Cache Bypass**: Failed requests do not override valid cached data
+
+## Error Handling
+
+- **Service Status**: Detailed error messages show which proxy services failed
+- **Fallback Messages**: User-friendly error display when all services are unavailable
+- **Console Logging**: Comprehensive debugging information for developers
+- **Graceful Degradation**: Component remains functional even with feed loading failures
 
 ## Features
 
