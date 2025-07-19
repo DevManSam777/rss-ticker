@@ -9,6 +9,9 @@ class RSSTickerElement extends HTMLElement {
     this.resizeObserver = null;
     this.lastMeasuredCycleWidth = 0;
     this.isLoading = false;
+    this._fetchPromise = null;
+    this.resizeTimeout = null;
+    this._fetchDebounceTimeout = null;
   }
 
   static get observedAttributes() {
@@ -31,7 +34,8 @@ class RSSTickerElement extends HTMLElement {
   connectedCallback() {
     this.loadGoogleFont();
     this.render();
-    this.fetchRSSFeed();
+    // Debounce the initial fetch as well, in case connectedCallback is called multiple times
+    this.debouncedFetchRSSFeed();
 
     this.resizeObserver = new ResizeObserver(entries => {
       if (entries.length > 0 && this.lastMeasuredCycleWidth > 0) {
@@ -56,7 +60,11 @@ class RSSTickerElement extends HTMLElement {
     if (this.resizeTimeout) {
       clearTimeout(this.resizeTimeout);
     }
+    if (this._fetchDebounceTimeout) {
+      clearTimeout(this._fetchDebounceTimeout);
+    }
     this.isLoading = false;
+    this._fetchPromise = null;
   }
 
   attributeChangedCallback(name, oldValue, newValue) {
@@ -65,7 +73,8 @@ class RSSTickerElement extends HTMLElement {
         this.loadGoogleFont();
       }
       if (name === 'rss-url' || name === 'max-posts') {
-        this.fetchRSSFeed();
+        // Debounce fetch calls triggered by attribute changes
+        this.debouncedFetchRSSFeed();
       } else {
         this.updateStyles();
         if (['font-family', 'font-weight', 'font-size', 'separator'].includes(name)) {
@@ -79,6 +88,7 @@ class RSSTickerElement extends HTMLElement {
     const fontName = this.getAttribute('google-font');
     if (!fontName) return;
     const weight = this.getAttribute('font-weight') || '400';
+    // Prevent adding duplicate font links
     const existingLink = document.head.querySelector(`link[href*="${fontName.replace(' ', '+')}"]`);
 
     if (existingLink) return;
@@ -89,133 +99,283 @@ class RSSTickerElement extends HTMLElement {
     document.head.appendChild(link);
   }
 
+  /**
+   * Debounces calls to fetchRSSFeed to prevent excessive requests.
+   */
+  debouncedFetchRSSFeed() {
+    if (this._fetchDebounceTimeout) {
+      clearTimeout(this._fetchDebounceTimeout);
+    }
+    this._fetchDebounceTimeout = setTimeout(() => {
+      this.fetchRSSFeed();
+    }, 100); // Small debounce time to group rapid attribute changes
+  }
+
+
+  /**
+   * Fetches the RSS feed using multiple proxy services in parallel.
+   * Prioritizes the fastest successful response. Includes caching.
+   */
   async fetchRSSFeed() {
     const rssUrl = this.getAttribute('rss-url');
-    if (!rssUrl || this.isLoading) {
-      if (!rssUrl) this.showMessage('No RSS URL provided');
+    if (!rssUrl) {
+      this.showMessage('No RSS URL provided');
       return;
+    }
+
+    // If a fetch is already in progress, return the existing promise
+    if (this.isLoading && this._fetchPromise) {
+      console.log('Fetch already in progress, waiting for existing fetch to complete.');
+      return this._fetchPromise;
+    }
+
+    // Attempt to load from cache first
+    const cachedData = this.loadFromCache(rssUrl);
+    if (cachedData) {
+      console.log('✅ Loaded from cache:', rssUrl);
+      this.posts = cachedData;
+      this.updateTickerContent();
+      return; // Exit if cached data is found and valid
     }
 
     this.isLoading = true;
     this.showMessage('Loading...', '#007bff');
+    this.posts = []; // Clear previous posts immediately
 
-    // Fast services with aggressive timeouts
     const services = [{
       name: 'allorigins',
       url: `https://api.allorigins.win/get?url=${encodeURIComponent(rssUrl)}`,
-      timeout: 2500,
+      timeout: 3000,
       parseXML: true
     }, {
       name: 'jsonp-proxy',
       url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(rssUrl)}`,
-      timeout: 2000,
+      timeout: 2500,
       parseXML: true
     }, {
-      name: 'proxy-api',
+      name: 'rss2json',
       url: `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`,
-      timeout: 2000,
+      timeout: 2500,
       parseXML: false
     }];
 
-    for (let attempt = 0; attempt < 2; attempt++) {
-      for (const service of services) {
-        try {
-          if (attempt > 0) {
-            console.log(`🔄 Retry attempt ${attempt + 1} with ${service.name}...`);
-          } else {
-            console.log(`🚀 Trying ${service.name}...`);
+    let success = false;
+    let errors = [];
+
+    // Store the promise to prevent concurrent calls
+    this._fetchPromise = (async () => {
+      try {
+        // Attempt 1: Race all services in parallel, each with retries
+        await Promise.race(services.map(service => this.fetchServiceWithRetries(service, rssUrl, 2))); // 2 retries per service
+        success = true;
+      } catch (error) {
+        // This catch block will only be hit if the *first* promise to settle in the race rejects.
+        // It doesn't mean all failed, just that the first one to finish failed.
+        // We'll proceed to sequential fallback for more detailed logging/attempts.
+        console.log("Initial service race failed. Trying sequential fallback.");
+      }
+
+      // If the race didn't result in a success, try services sequentially as a fallback
+      if (!success) {
+        for (const service of services) {
+          try {
+            await this.fetchServiceWithRetries(service, rssUrl, 2); // 2 retries per service
+            success = true;
+            break; // Stop on the first successful sequential fetch
+          } catch (error) {
+            console.log(`❌ Sequential ${service.name} failed:`, error.message);
+            errors.push(`${service.name}: ${error.message}`);
           }
-
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), service.timeout);
-
-          const response = await fetch(service.url, {
-            signal: controller.signal,
-            // NO CUSTOM HEADERS - they trigger CORS preflight
-            // Only use simple request headers to avoid preflight
-          });
-
-          clearTimeout(timeoutId);
-
-          if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-          }
-
-          let xmlData;
-          if (service.parseXML) {
-            if (service.name === 'allorigins') {
-              const json = await response.json();
-              if (!json.contents || json.contents.length < 100) {
-                throw new Error('AllOrigins returned empty content');
-              }
-              xmlData = json.contents;
-            } else {
-              xmlData = await response.text();
-              if (!xmlData || xmlData.length < 100) {
-                throw new Error('Empty or too short response');
-              }
-            }
-
-            // Validate it looks like XML/RSS
-            if (!xmlData.includes('<rss') && !xmlData.includes('<feed') && !xmlData.includes('<channel')) {
-              throw new Error('Response does not appear to be a valid RSS/XML feed');
-            }
-
-            this.parseXMLFeed(xmlData, rssUrl);
-          } else {
-            // Handle RSS2JSON response
-            const jsonData = await response.json();
-            if (jsonData.status !== 'ok') {
-              throw new Error(jsonData.message || 'RSS2JSON service error');
-            }
-            this.parseJSONFeed(jsonData, rssUrl);
-          }
-          console.log(`✅ SUCCESS with ${service.name}! Loaded ${this.posts.length} posts`);
-          this.isLoading = false;
-          return;
-
-        } catch (error) {
-          console.log(`❌ ${service.name} failed:`, error.message);
-          continue;
         }
       }
-    }
 
-    this.isLoading = false;
-    this.showMessage('All RSS services failed. Please check the feed URL.', '#dc3545');
+      this.isLoading = false;
+      this._fetchPromise = null; // Clear the promise
+
+      if (success) {
+        console.log(`✅ SUCCESS! Loaded ${this.posts.length} posts for ${rssUrl}`);
+        this.saveToCache(rssUrl, this.posts); // Save successful fetch to cache
+        this.updateTickerContent();
+      } else {
+        // Display error message if all attempts fail
+        this.showMessage(`All RSS services failed for ${this.extractDomain(rssUrl)}. Errors: ${errors.map(e => e.split(':')[0]).join(', ')}.`, '#dc3545');
+      }
+    })();
+
+    return this._fetchPromise; // Return the promise for external chaining if needed
   }
+
+  /**
+   * Attempts to fetch from a service with a specified number of retries.
+   * @param {Object} service - The service configuration.
+   * @param {string} rssUrl - The original RSS feed URL.
+   * @param {number} retriesLeft - Number of retries remaining.
+   * @returns {Promise<boolean>} Resolves true on success, rejects on failure after all retries.
+   */
+  async fetchServiceWithRetries(service, rssUrl, retriesLeft) {
+    try {
+      return await this.fetchService(service, rssUrl);
+    } catch (error) {
+      if (retriesLeft > 0) {
+        console.log(`🔄 Retrying ${service.name} for ${this.extractDomain(rssUrl)} (${retriesLeft} retries left)...`);
+        await new Promise(resolve => setTimeout(resolve, 500)); // Small delay before retry
+        return this.fetchServiceWithRetries(service, rssUrl, retriesLeft - 1);
+      } else {
+        throw error; // No retries left, re-throw the error
+      }
+    }
+  }
+
+  /**
+   * Helper function to fetch from a single service.
+   * Includes improved error logging for non-XML/JSON content and data: URI handling.
+   */
+  async fetchService(service, rssUrl) {
+    console.log(`🚀 Trying ${service.name} for ${this.extractDomain(rssUrl)}...`);
+    const controller = new AbortController();
+    // Set up a timeout to abort the fetch if it takes too long
+    const timeoutId = setTimeout(() => controller.abort(), service.timeout);
+
+    try {
+      const response = await fetch(service.url, {
+        signal: controller.signal,
+        // No custom headers to avoid CORS preflight issues with proxies
+      });
+
+      clearTimeout(timeoutId); // Clear the timeout if fetch completes in time
+
+      if (!response.ok) {
+        // Attempt to read response body for more detailed error logging
+        const errorText = await response.text().catch(() => 'No response body');
+        console.error(`HTTP Error from ${service.name} for ${rssUrl}: ${response.status} ${response.statusText}. Response body: ${errorText.substring(0, Math.min(errorText.length, 200))}...`);
+        throw new Error(`HTTP ${response.status}: ${response.statusText || 'Unknown Error'}`);
+      }
+
+      let rawData;
+      if (service.parseXML) {
+        // Handle XML parsing for allorigins and codetabs
+        if (service.name === 'allorigins') {
+          const json = await response.json();
+          if (!json.contents || typeof json.contents !== 'string' || json.contents.length < 100) {
+            console.warn(`AllOrigins returned unexpected content for ${rssUrl}. Content:`, json.contents);
+            throw new Error('AllOrigins returned empty, non-string, or too short content');
+          }
+          rawData = json.contents;
+
+          // NEW: Handle data: URI returned by allorigins
+          if (rawData.startsWith('data:')) {
+              const parts = rawData.split(',');
+              if (parts.length > 1) {
+                  const mimeTypeAndEncoding = parts[0].substring(5); // Remove 'data:'
+                  const base64Content = parts[1];
+                  // Check if it's base64 encoded
+                  if (mimeTypeAndEncoding.includes('base64')) {
+                      try {
+                          rawData = atob(base64Content); // Decode base64
+                          console.log(`Decoded base64 content from allorigins for ${rssUrl}`);
+                      } catch (e) {
+                          console.error(`Error decoding base64 from allorigins for ${rssUrl}:`, e);
+                          throw new Error('Failed to decode base64 content from allorigins');
+                      }
+                  } else {
+                      // If not base64, assume it's URL-encoded or plain text
+                      rawData = decodeURIComponent(base64Content);
+                      console.log(`Decoded URL-encoded content from allorigins for ${rssUrl}`);
+                  }
+              }
+          }
+
+        } else { // jsonp-proxy
+          rawData = await response.text();
+          if (!rawData || rawData.length < 100) {
+            throw new Error('Empty or too short response from proxy');
+          }
+        }
+
+        // More robust check for non-XML content, logging raw data for debugging
+        if (!rawData.trim().startsWith('<') || (!rawData.includes('<rss') && !rawData.includes('<feed') && !rawData.includes('<channel'))) {
+            console.warn(`Response from ${service.name} for ${rssUrl} does not look like XML. Raw data start:`, rawData.substring(0, Math.min(rawData.length, 500)));
+            throw new Error('Response does not appear to be a valid RSS/XML feed');
+        }
+        this.parseXMLFeed(rawData, rssUrl);
+      } else { // JSON service (rss2json)
+        const jsonData = await response.json();
+        if (jsonData.status !== 'ok') {
+          console.warn(`RSS2JSON service error for ${rssUrl}. Message:`, jsonData.message, 'Full response:', jsonData);
+          throw new Error(jsonData.message || 'RSS2JSON service error');
+        }
+        this.parseJSONFeed(jsonData, rssUrl);
+      }
+      console.log(`✅ SUCCESS with ${service.name} for ${this.extractDomain(rssUrl)}!`);
+      return true;
+    } catch (error) {
+      clearTimeout(timeoutId); // Ensure timeout is cleared even on error
+      console.log(`❌ ${service.name} failed for ${this.extractDomain(rssUrl)}:`, error.message);
+      throw error; // Re-throw the error to be caught by Promise.race or the sequential loop
+    }
+  }
+
+  // --- Caching Logic ---
+  loadFromCache(rssUrl) {
+    try {
+      const cacheKey = `rss_ticker_cache_${btoa(rssUrl)}`; // Base64 encode URL for safe key
+      const cachedItem = localStorage.getItem(cacheKey);
+      if (cachedItem) {
+        const {
+          data,
+          timestamp
+        } = JSON.parse(cachedItem);
+        const cacheDuration = 1000 * 60 * 30; // 30 minutes cache duration
+        if (Date.now() - timestamp < cacheDuration) {
+          return data;
+        } else {
+          console.log('Cache expired for', rssUrl);
+          localStorage.removeItem(cacheKey);
+        }
+      }
+    } catch (e) {
+      console.error('Error loading from cache:', e);
+      localStorage.removeItem(`rss_ticker_cache_${btoa(rssUrl)}`); // Clear corrupted cache
+    }
+    return null;
+  }
+
+  saveToCache(rssUrl, data) {
+    try {
+      const cacheKey = `rss_ticker_cache_${btoa(rssUrl)}`;
+      const item = {
+        data: data,
+        timestamp: Date.now()
+      };
+      localStorage.setItem(cacheKey, JSON.stringify(item));
+      console.log('Saved to cache:', rssUrl);
+    } catch (e) {
+      console.error('Error saving to cache:', e);
+    }
+  }
+  // --- End Caching Logic ---
 
   parseXMLFeed(xmlString, rssUrl) {
     try {
       const parser = new DOMParser();
       const xmlDoc = parser.parseFromString(xmlString, 'text/xml');
 
-      // Check for parsing errors
+      // Check for parsing errors in the XML document itself
       const parserError = xmlDoc.querySelector('parsererror');
       if (parserError) {
-        throw new Error('Invalid XML format');
+        console.error('XML parsing error (DOMParser):', parserError.textContent);
+        throw new Error(`Invalid XML format: ${parserError.textContent.substring(0, Math.min(parserError.textContent.length, 100))}...`);
       }
 
       const domain = this.extractDomain(rssUrl);
-      // Get maxPosts, if not a valid number, set to Infinity
       const maxPostsAttr = this.getAttribute('max-posts');
       const maxPosts = (maxPostsAttr && !isNaN(parseInt(maxPostsAttr))) ? parseInt(maxPostsAttr) : Infinity;
 
-      // Try multiple RSS/Atom formats
       let items = [];
-
-      // RSS 2.0 format
+      // Try to find items in common RSS/Atom structures
       items = Array.from(xmlDoc.querySelectorAll('rss > channel > item'));
-
-      // RSS 1.0 / RDF format
-      if (items.length === 0) {
-        items = Array.from(xmlDoc.querySelectorAll('item'));
-      }
-
-      // Atom format
-      if (items.length === 0) {
-        items = Array.from(xmlDoc.querySelectorAll('entry'));
-      }
+      if (items.length === 0) items = Array.from(xmlDoc.querySelectorAll('item')); // RSS 1.0 / RDF
+      if (items.length === 0) items = Array.from(xmlDoc.querySelectorAll('entry')); // Atom
 
       if (items.length === 0) {
         throw new Error('No feed items found in XML');
@@ -228,13 +388,13 @@ class RSSTickerElement extends HTMLElement {
           let date = 'No date';
           let link = '#';
 
-          // Get title (try multiple selectors)
-          const titleEl = item.querySelector('title') || item.querySelector('title');
+          // Extract title, handling potential CDATA or text content
+          const titleEl = item.querySelector('title');
           if (titleEl) {
-            title = this.stripHtml(titleEl.textContent || titleEl.textContent).trim();
+            title = this.stripHtml(titleEl.textContent || '').trim();
           }
 
-          // Get date (try multiple date fields)
+          // Extract date from various common date fields
           const dateSelectors = ['pubDate', 'published', 'updated', 'dc\\:date', 'date'];
           for (const selector of dateSelectors) {
             const dateEl = item.querySelector(selector);
@@ -247,15 +407,12 @@ class RSSTickerElement extends HTMLElement {
             }
           }
 
-          // Get link (try multiple link formats)
+          // Extract link, handling RSS <link>text</link> and Atom <link href="attr"/>
           const linkEl = item.querySelector('link');
           if (linkEl) {
-            // RSS format: <link>url</link>
             if (linkEl.textContent && linkEl.textContent.trim()) {
               link = linkEl.textContent.trim();
-            }
-            // Atom format: <link href="url" />
-            else if (linkEl.getAttribute('href')) {
+            } else if (linkEl.getAttribute('href')) {
               link = linkEl.getAttribute('href');
             }
           }
@@ -275,14 +432,13 @@ class RSSTickerElement extends HTMLElement {
             link: link.trim()
           };
         })
-        .filter(post => post.title !== 'No title' && post.title.length > 3);
+        .filter(post => post.title !== 'No title' && post.title.length > 3); // Filter out invalid posts
 
       if (this.posts.length === 0) {
-        throw new Error('No valid posts found after filtering');
+        throw new Error('No valid posts found after parsing and filtering');
       }
 
       console.log(`📰 Parsed ${this.posts.length} posts from XML feed`);
-      this.updateTickerContent();
 
     } catch (error) {
       console.error('XML parsing failed:', error);
@@ -292,19 +448,17 @@ class RSSTickerElement extends HTMLElement {
 
   parseJSONFeed(data, rssUrl) {
     const domain = this.extractDomain(rssUrl);
-    // Get maxPosts, if not a valid number, set to Infinity
     const maxPostsAttr = this.getAttribute('max-posts');
     const maxPosts = (maxPostsAttr && !isNaN(parseInt(maxPostsAttr))) ? parseInt(maxPostsAttr) : Infinity;
 
     let items = [];
-
-    // Handle different JSON formats
+    // Handle different JSON feed formats (e.g., RSS2JSON, JSON Feed)
     if (data.items) {
-      items = data.items; // RSS2JSON format
+      items = data.items;
     } else if (data.entries) {
-      items = data.entries; // Some other formats
+      items = data.entries;
     } else if (Array.isArray(data)) {
-      items = data; // Direct array
+      items = data;
     } else {
       throw new Error('Unknown JSON format');
     }
@@ -314,16 +468,17 @@ class RSSTickerElement extends HTMLElement {
       .map(item => {
         const title = this.stripHtml(item.title || item.title_detail?.value || 'No title').trim();
 
-        // Handle different date formats
         let date = 'No date';
         const pubDate = item.pubDate || item.published || item.date_published || item.updated;
         if (pubDate) {
-          date = this.formatDate(new Date(pubDate));
+          const parsedDate = new Date(pubDate);
+          if (!isNaN(parsedDate.getTime())) {
+            date = this.formatDate(parsedDate);
+          }
         }
 
-        // Handle different link formats      
         let link = item.link || item.url || item.guid || '#';
-        if (typeof link === 'object') {
+        if (typeof link === 'object' && link !== null) { // Handle cases where link might be an object
           link = link.href || link.url || '#';
         }
 
@@ -337,11 +492,10 @@ class RSSTickerElement extends HTMLElement {
       .filter(post => post.title !== 'No title' && post.title.length > 3);
 
     if (this.posts.length === 0) {
-      throw new Error('No posts found');
+      throw new Error('No valid posts found after parsing and filtering');
     }
 
     console.log(`📰 Loaded ${this.posts.length} posts from ${domain}`);
-    this.updateTickerContent();
   }
 
   stripHtml(html) {
@@ -376,9 +530,9 @@ class RSSTickerElement extends HTMLElement {
     if (ticker) {
       ticker.textContent = message;
       ticker.style.color = color;
-      ticker.style.animation = 'none';
+      ticker.style.animation = 'none'; // Stop animation for messages
       ticker.style.transform = 'translateX(0)';
-      this.lastMeasuredCycleWidth = 0;
+      this.lastMeasuredCycleWidth = 0; // Reset width to force re-measurement
     }
   }
 
@@ -387,12 +541,15 @@ class RSSTickerElement extends HTMLElement {
     const tickerContent = this.shadowRoot.querySelector('.ticker-content');
 
     if (!tickerContent || this.posts.length === 0) {
+      this.showMessage('No posts to display.');
       return;
     }
 
+    // Generate HTML for each post
     const postHtml = this.posts
       .map((post, index) => {
         let safeLink = post.link;
+        // Ensure links are absolute and valid
         if (safeLink !== '#' && !safeLink.startsWith('http')) {
           safeLink = `https://${safeLink}`;
         }
@@ -405,14 +562,16 @@ class RSSTickerElement extends HTMLElement {
       })
       .join(`<span class="separator">${separator}</span>`);
 
-    // Triple content for seamless loop
+    // Triple the content to create a seamless looping effect
     const fullContent = `${postHtml}<span class="separator">${separator}</span>${postHtml}<span class="separator">${separator}</span>${postHtml}`;
     tickerContent.innerHTML = fullContent;
     tickerContent.style.color = this.getAttribute('title-color') || '#333';
 
+    // Reset animation and transform to prepare for new animation calculation
     tickerContent.style.animation = 'none';
     tickerContent.style.transform = 'translateX(0)';
 
+    // Use requestAnimationFrame to ensure DOM is ready before measuring and starting animation
     requestAnimationFrame(() => {
       this.startAnimation();
     });
@@ -426,10 +585,10 @@ class RSSTickerElement extends HTMLElement {
       return;
     }
 
-    // Measure one cycle width
+    // Create a temporary element to accurately measure the width of one full cycle of content
     const separator = this.getAttribute('separator') || '|';
     const postHtml = this.posts
-      .map(post => {
+      .map(post => { // Using post.link here, which is safer
         let safeLink = post.link;
         if (safeLink !== '#' && !safeLink.startsWith('http')) {
           safeLink = `https://${safeLink}`;
@@ -443,6 +602,7 @@ class RSSTickerElement extends HTMLElement {
       .join(`<span class="separator">${separator}</span>`);
 
     const tempDiv = document.createElement('div');
+    // Apply relevant styles to the temporary div for accurate measurement
     tempDiv.style.cssText = `
         position: absolute;
         visibility: hidden;
@@ -452,19 +612,25 @@ class RSSTickerElement extends HTMLElement {
         font-size: ${this.getComputedStyleValue('font-size')};
         line-height: 1.4;
     `;
+    // Content for one cycle (posts + one separator)
     tempDiv.innerHTML = `${postHtml}<span class="separator">${separator}</span>`;
 
     this.shadowRoot.appendChild(tempDiv);
     const cycleWidth = tempDiv.offsetWidth;
-    this.shadowRoot.removeChild(tempDiv);
+    this.shadowRoot.removeChild(tempDiv); // Clean up the temporary div
 
-    if (cycleWidth === 0) return;
+    if (cycleWidth === 0) {
+      console.warn('Cycle width is 0, cannot start animation.');
+      return;
+    }
 
-    this.lastMeasuredCycleWidth = cycleWidth;
+    this.lastMeasuredCycleWidth = cycleWidth; // Store for resize observer
 
+    // Calculate animation duration based on speed attribute and content width
     const speed = Math.max(1, Math.min(10, parseInt(this.getAttribute('speed')) || 5));
-    const duration = cycleWidth / (speed * 25); // Faster base speed
+    const duration = cycleWidth / (speed * 25); // Adjust multiplier for desired base speed
 
+    // Dynamically update CSS keyframes for the scrolling animation
     const styleEl = this.shadowRoot.querySelector('style');
     if (styleEl) {
       const keyframes = `
@@ -476,21 +642,26 @@ class RSSTickerElement extends HTMLElement {
       const currentStyle = styleEl.textContent;
       const keyframesRegex = /@keyframes scroll-dynamic \{[^}]*\}/s;
       if (keyframesRegex.test(currentStyle)) {
+        // Replace existing keyframes
         styleEl.textContent = currentStyle.replace(keyframesRegex, keyframes);
       } else {
+        // Add new keyframes
         styleEl.textContent += keyframes;
       }
     }
 
+    // Apply the animation to the ticker content
     content.style.animation = `scroll-dynamic ${duration}s linear infinite`;
-    content.style.transform = 'translateX(0)';
+    content.style.transform = 'translateX(0)'; // Ensure initial position is correct
   }
 
+  // Helper to get computed style values for accurate measurement
   getComputedStyleValue(prop) {
     const content = this.shadowRoot.querySelector('.ticker-content');
     return content ? getComputedStyle(content)[prop] : '';
   }
 
+  // Updates the component's internal styles based on attributes
   updateStyles() {
     const style = this.shadowRoot.querySelector('style');
     if (style) {
@@ -498,6 +669,7 @@ class RSSTickerElement extends HTMLElement {
     }
   }
 
+  // Generates the CSS styles for the component
   getStyles() {
     const domainColor = this.getAttribute('domain-color') || '#007bff';
     const dateColor = this.getAttribute('date-color') || '#6c757d';
@@ -508,6 +680,7 @@ class RSSTickerElement extends HTMLElement {
     const fontWeight = this.getAttribute('font-weight') || '400';
     const fontSize = this.getAttribute('font-size') || '14px';
 
+    // Prioritize Google Font if specified, otherwise use fallback
     const finalFontFamily = googleFont ? `"${googleFont}", ${fontFamily}` : fontFamily;
 
     return `
@@ -517,12 +690,13 @@ class RSSTickerElement extends HTMLElement {
         overflow: hidden;
         background-color: ${backgroundColor};
         padding: 12px 0;
+        box-sizing: border-box; /* Include padding in width calculation */
       }
       .ticker-container {
         white-space: nowrap;
         overflow: hidden;
         position: relative;
-        min-height: 1.6em;
+        min-height: 1.6em; /* Ensure minimum height even with no content */
         height: auto;
         display: flex;
         align-items: center;
@@ -534,22 +708,25 @@ class RSSTickerElement extends HTMLElement {
         font-size: ${fontSize};
         line-height: 1.4;
         color: ${titleColor};
-        will-change: transform;
+        will-change: transform; /* Hint to browser for animation optimization */
         white-space: nowrap;
         transform: translateX(0);
       }
       .ticker-container:hover .ticker-content {
-        animation-play-state: paused !important;
+        animation-play-state: paused !important; /* Pause animation on hover */
       }
       .post-link {
         text-decoration: none;
         color: inherit;
         display: inline-block;
         transition: all 0.2s ease;
+        padding: 0 5px; /* Add some internal padding for better clickability */
+        border-radius: 4px; /* Slightly rounded corners for links */
       }
       .post-link:hover {
         transform: translateY(-1px);
         filter: brightness(1.1);
+        background-color: rgba(0, 0, 0, 0.05); /* Subtle hover background */
       }
       .post-title {
         font-weight: bold;
@@ -572,12 +749,13 @@ class RSSTickerElement extends HTMLElement {
         font-weight: bold;
         margin: 0 2em;
       }
+      /* Responsive adjustments */
       @media (max-width: 768px) {
         :host {
           padding: 8px 0;
         }
         .ticker-content {
-          font-size: calc(${fontSize} * 0.9);
+          font-size: calc(${fontSize.replace('px', '')} * 0.9px); /* Scale down font size */
         }
         .post-title {
           margin-left: 0.8em;
@@ -589,6 +767,7 @@ class RSSTickerElement extends HTMLElement {
           margin: 0 1.5em;
         }
       }
+      /* Accessibility: reduce motion preference */
       @media (prefers-reduced-motion: reduce) {
         .ticker-content {
           animation: none !important;
@@ -598,6 +777,7 @@ class RSSTickerElement extends HTMLElement {
     `;
   }
 
+  // Renders the initial structure of the web component
   render() {
     this.shadowRoot.innerHTML = `
       <style>${this.getStyles()}</style>
@@ -608,4 +788,5 @@ class RSSTickerElement extends HTMLElement {
   }
 }
 
+// Define the custom element
 customElements.define('rss-ticker', RSSTickerElement);
