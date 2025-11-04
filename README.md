@@ -53,8 +53,7 @@ The component automatically detects and parses multiple RSS/Atom feed formats:
 Import the web component in your HTML head section:
 
 ```html
-<script src="https://raw.githack.com/DevManSam777/rss-ticker/main/rss-ticker.js"></script>
-
+<script src="https://cdn.jsdelivr.net/gh/DevManSam777/rss-ticker@main/rss-ticker.js"></script>
 ```
 
 Add the web component in your HTML body where you would like it to be displayed
