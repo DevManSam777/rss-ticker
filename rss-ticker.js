@@ -31,8 +31,7 @@ class RSSTickerElement extends HTMLElement {
     ];
   }
 
-  connectedCallback() {
-    console.log('Component connectedCallback triggered.'); 
+  connectedCallback() { 
     this.loadGoogleFont();
     this.render();
     // Debounce the initial fetch. This is crucial if connectedCallback fires multiple times.
@@ -66,7 +65,6 @@ class RSSTickerElement extends HTMLElement {
     }
     this.isLoading = false;
     this._fetchPromise = null; // Clear the promise on disconnect
-    console.log('Component disconnectedCallback triggered.');
   }
 
   attributeChangedCallback(name, oldValue, newValue) {
@@ -109,10 +107,7 @@ class RSSTickerElement extends HTMLElement {
     }
 
     // If a fetch is already in progress for this URL, do not schedule a new one.
-    if (this.isLoading && this._fetchPromise) {
-        console.log('Debounced fetch skipped: A fetch is already in progress or recently completed.');
-        return;
-    }
+   
 
     if (this._fetchDebounceTimeout) {
       clearTimeout(this._fetchDebounceTimeout);
@@ -134,14 +129,12 @@ class RSSTickerElement extends HTMLElement {
 
     // This prevents redundant fetches if fetchRSSFeed is called multiple times quickly.
     if (this.isLoading && this._fetchPromise) {
-      console.log('FetchRSSFeed: An active fetch promise exists, returning it.');
       return this._fetchPromise;
     }
 
     // Attempt to load from cache first
     const cachedData = this.loadFromCache(rssUrl);
     if (cachedData) {
-      console.log('✅ Loaded from cache:', rssUrl);
       this.posts = cachedData;
       this.updateTickerContent();
       this.isLoading = false; // Ensure loading state is reset
@@ -184,7 +177,7 @@ class RSSTickerElement extends HTMLElement {
         // This catch block will only be hit if the *first* promise to settle in the race rejects.
         // It doesn't mean all failed, just that the first one to finish failed.
         // Proceed to sequential fallback for more detailed attempts.
-        console.log("Initial service race failed. Trying sequential fallback.");
+       null;
       }
 
       // If the race didn't result in a success, try services sequentially as a fallback
@@ -195,7 +188,6 @@ class RSSTickerElement extends HTMLElement {
             success = true;
             break; // Stop on the first successful sequential fetch
           } catch (error) {
-            console.log(`❌ Sequential ${service.name} failed:`, error.message);
             errors.push(`${service.name}: ${error.message}`);
           }
         }
@@ -205,7 +197,6 @@ class RSSTickerElement extends HTMLElement {
       this._fetchPromise = null; // Clear the promise once all attempts are done
 
       if (success) {
-        console.log(`✅ SUCCESS! Loaded ${this.posts.length} posts for ${rssUrl}`);
         this.saveToCache(rssUrl, this.posts); // Save successful fetch to cache
         this.updateTickerContent();
       } else {
@@ -223,7 +214,6 @@ class RSSTickerElement extends HTMLElement {
       return await this.fetchService(service, rssUrl);
     } catch (error) {
       if (retriesLeft > 0) {
-        console.log(`🔄 Retrying ${service.name} for ${this.extractDomain(rssUrl)} (${retriesLeft} retries left)...`);
         await new Promise(resolve => setTimeout(resolve, 500)); 
         return this.fetchServiceWithRetries(service, rssUrl, retriesLeft - 1);
       } else {
@@ -235,7 +225,6 @@ class RSSTickerElement extends HTMLElement {
   // Helper function to fetch from a single service.
   
   async fetchService(service, rssUrl) {
-    console.log(`🚀 Trying ${service.name} for ${this.extractDomain(rssUrl)}...`);
     const controller = new AbortController();
     // Set up a timeout to abort the fetch if it takes too long
     const timeoutId = setTimeout(() => controller.abort(), service.timeout);
@@ -276,15 +265,12 @@ class RSSTickerElement extends HTMLElement {
                   if (mimeTypeAndEncoding.includes('base64')) {
                       try {
                           rawData = atob(base64Content); // Decode base64
-                          console.log(`Decoded base64 content from allorigins for ${rssUrl}`);
                       } catch (e) {
-                          console.error(`Error decoding base64 from allorigins for ${rssUrl}:`, e);
                           throw new Error('Failed to decode base64 content from allorigins');
                       }
                   } else {
                       // If not base64, assume it's URL-encoded or plain text
                       rawData = decodeURIComponent(base64Content);
-                      console.log(`Decoded URL-encoded content from allorigins for ${rssUrl}`);
                   }
               }
           }
@@ -310,11 +296,9 @@ class RSSTickerElement extends HTMLElement {
         }
         this.parseJSONFeed(jsonData, jsonData, rssUrl); // Pass jsonData twice, first for data, second for original response for context
       }
-      console.log(`✅ SUCCESS with ${service.name} for ${this.extractDomain(rssUrl)}!`);
       return true;
     } catch (error) {
       clearTimeout(timeoutId); // Ensure timeout is cleared even on error
-      console.log(`❌ ${service.name} failed for ${this.extractDomain(rssUrl)}:`, error.message);
       throw error; // Re-throw the error to be caught by Promise.race or the sequential loop
     }
   }
@@ -333,7 +317,6 @@ class RSSTickerElement extends HTMLElement {
         if (Date.now() - timestamp < cacheDuration) {
           return data;
         } else {
-          console.log('Cache expired for', rssUrl);
           localStorage.removeItem(cacheKey);
         }
       }
@@ -352,7 +335,6 @@ class RSSTickerElement extends HTMLElement {
         timestamp: Date.now()
       };
       localStorage.setItem(cacheKey, JSON.stringify(item));
-      console.log('Saved to cache:', rssUrl);
     } catch (e) {
       console.error('Error saving to cache:', e);
     }
@@ -445,7 +427,6 @@ class RSSTickerElement extends HTMLElement {
         throw new Error('No valid posts found after parsing and filtering');
       }
 
-      console.log(`📰 Parsed ${this.posts.length} posts from XML feed`);
 
     } catch (error) {
       console.error('XML parsing failed:', error);
@@ -501,8 +482,6 @@ class RSSTickerElement extends HTMLElement {
     if (this.posts.length === 0) {
       throw new Error('No valid posts found after parsing and filtering');
     }
-
-    console.log(`📰 Loaded ${this.posts.length} posts from ${domain}`);
   }
 
   stripHtml(html) {
