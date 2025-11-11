@@ -240,7 +240,6 @@ class RSSTickerElement extends HTMLElement {
       if (!response.ok) {
         // Attempt to read response body for more detailed error logging
         const errorText = await response.text().catch(() => 'No response body');
-        console.error(`HTTP Error from ${service.name} for ${rssUrl}: ${response.status} ${response.statusText}. Response body: ${errorText.substring(0, Math.min(errorText.length, 200))}...`);
         throw new Error(`HTTP ${response.status}: ${response.statusText || 'Unknown Error'}`);
       }
 
@@ -250,7 +249,6 @@ class RSSTickerElement extends HTMLElement {
         if (service.name === 'allorigins') {
           const json = await response.json();
           if (!json.contents || typeof json.contents !== 'string' || json.contents.length < 100) {
-            console.warn(`AllOrigins returned unexpected content for ${rssUrl}. Content:`, json.contents);
             throw new Error('AllOrigins returned empty, non-string, or too short content');
           }
           rawData = json.contents;
@@ -282,16 +280,14 @@ class RSSTickerElement extends HTMLElement {
           }
         }
 
-        // More robust check for non-XML content, logging raw data for debugging
+        // More robust check for non-XML content
         if (!rawData.trim().startsWith('<') || (!rawData.includes('<rss') && !rawData.includes('<feed') && !rawData.includes('<channel'))) {
-            console.warn(`Response from ${service.name} for ${rssUrl} does not look like XML. Raw data start:`, rawData.substring(0, Math.min(rawData.length, 500)));
             throw new Error('Response does not appear to be a valid RSS/XML feed');
         }
         this.parseXMLFeed(rawData, rssUrl);
       } else { // JSON service (rss2json)
         const jsonData = await response.json();
         if (jsonData.status !== 'ok') {
-          console.warn(`RSS2JSON service error for ${rssUrl}. Message:`, jsonData.message, 'Full response:', jsonData);
           throw new Error(jsonData.message || 'RSS2JSON service error');
         }
         this.parseJSONFeed(jsonData, jsonData, rssUrl); // Pass jsonData twice, first for data, second for original response for context
@@ -321,7 +317,6 @@ class RSSTickerElement extends HTMLElement {
         }
       }
     } catch (e) {
-      console.error('Error loading from cache:', e);
       localStorage.removeItem(`rss_ticker_cache_${btoa(rssUrl)}`); // Clear corrupted cache
     }
     return null;
@@ -336,7 +331,7 @@ class RSSTickerElement extends HTMLElement {
       };
       localStorage.setItem(cacheKey, JSON.stringify(item));
     } catch (e) {
-      console.error('Error saving to cache:', e);
+      // Silent fail
     }
   }
   // --- End Caching Logic ---
@@ -349,7 +344,6 @@ class RSSTickerElement extends HTMLElement {
       // Check for parsing errors in the XML document itself
       const parserError = xmlDoc.querySelector('parsererror');
       if (parserError) {
-        console.error('XML parsing error (DOMParser):', parserError.textContent);
         throw new Error(`Invalid XML format: ${parserError.textContent.substring(0, Math.min(parserError.textContent.length, 100))}...`);
       }
 
@@ -429,7 +423,6 @@ class RSSTickerElement extends HTMLElement {
 
 
     } catch (error) {
-      console.error('XML parsing failed:', error);
       throw new Error(`XML parsing failed: ${error.message}`);
     }
   }
@@ -447,7 +440,6 @@ class RSSTickerElement extends HTMLElement {
     } else if (Array.isArray(data)) {
       items = data;
     } else {
-      console.warn('Unknown JSON format. Full response data:', originalResponseData); // Log full response for unknown format
       throw new Error('Unknown JSON format');
     }
 
@@ -606,7 +598,6 @@ class RSSTickerElement extends HTMLElement {
     this.shadowRoot.removeChild(tempDiv); // Clean up the temporary div
 
     if (cycleWidth === 0) {
-      console.warn('Cycle width is 0, cannot start animation.');
       return;
     }
 
