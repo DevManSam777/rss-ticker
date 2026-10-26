@@ -1,5 +1,5 @@
 (() => {
-console.info('rss-ticker v6 loaded');
+console.info('rss-ticker loaded');
 
 class RSSTickerElement extends HTMLElement {
   constructor() {
@@ -111,6 +111,8 @@ class RSSTickerElement extends HTMLElement {
       this._fetchingKey = null;
       this._retryCount = 0;
       this.posts = fresh;
+      console.info(`rss-ticker v7: ${rssUrl} served from cache; first posts:`,
+        fresh.slice(0, 3).map(p => `${p.title} | ${p.date} | ${p.link}`));
       this.updateTickerContent();
       return;
     }
@@ -141,12 +143,14 @@ class RSSTickerElement extends HTMLElement {
         if (this._fetchingKey !== cacheKey) return; // URL changed or element removed
         this._retryCount = 0;
         this.posts = posts;
+        console.info(`rss-ticker v7: ${rssUrl} loaded via "${route}"; first posts:`,
+          posts.slice(0, 3).map(p => `${p.title} | ${p.date} | ${p.link}`));
         this.saveToCache(cacheKey, posts);
         this.saveRoute(cacheKey, route);
         this.clearBroken(cacheKey);
         this.updateTickerContent();
       } catch (errors) {
-        console.warn(`rss-ticker v6: could not load ${rssUrl}\n  ` +
+        console.warn(`rss-ticker v7: could not load ${rssUrl}\n  ` +
           (Array.isArray(errors) ? errors.map(e => e.message).join('\n  ') : String(errors)));
         if (this._fetchingKey !== cacheKey) return;
 
@@ -200,13 +204,19 @@ class RSSTickerElement extends HTMLElement {
       { name: 'jina', kind: 'jina', url: `https://r.jina.ai/${rssUrl}`,
         timeout: 15000, gap: 3000, burst: 6 } // jina's free tier allows ~20 requests/min
     );
+    // rss2json fetches the feed itself and returns clean JSON (CORS-enabled, cached ~1h)
+    sources.push({ name: 'rss2json', kind: 'rss2json',
+      url: `https://api.rss2json.com/v1/api.json?rss_url=${enc}`,
+      timeout: 8000, gap: 500, burst: 3 });
 
     // Start times: direct and allorigins together, then the slower backups
     // If allorigins has been failing lately (and jina hasn't), go to jina straight away
     const hasDirect = sources.some(x => x.name === 'direct');
     const delays = RSSTickerElement._isDown('allorigins')
-      ? { direct: 0, jina: hasDirect ? 400 : 0, allorigins: 2500, 'allorigins-json': 5000 }
-      : { direct: 0, allorigins: 0, jina: 1500, 'allorigins-json': 3000 };
+      ? { direct: 0, jina: hasDirect ? 400 : 0, rss2json: 800, allorigins: 2500, 'allorigins-json': 5000 }
+      : { direct: 0, allorigins: 0, rss2json: 1200, jina: 2500, 'allorigins-json': 3000 };
+    // AllOrigins is unreliable for YouTube, so start rss2json right away instead of waiting
+    if (RSSTickerElement._isYouTube(rssUrl)) delays.rss2json = 0;
     const remembered = this.loadRoute(cacheKey);
     const useMemory = remembered && sources.some(x => x.name === remembered);
     sources.forEach(x => {
@@ -294,7 +304,7 @@ class RSSTickerElement extends HTMLElement {
     if (error.name === 'AbortError') reason = 'timed out';
     else if (error instanceof TypeError) reason = 'blocked, rate-limited or unreachable';
     const described = new Error(`${source.name}: ${reason}`);
-    described.isFeedProblem = !!error.isFeedProblem || [404, 408, 410].includes(error.status);
+    described.isFeedProblem = !!error.isFeedProblem || (!error.transient && [404, 408, 410].includes(error.status));
     described.isDefinitive = !!error.isDefinitive;
     return described;
   }
@@ -318,7 +328,9 @@ class RSSTickerElement extends HTMLElement {
       if (!response.ok) {
         const err = new Error(`HTTP ${response.status}`);
         err.status = response.status;
-        err.isDefinitive = source.name !== 'direct' && (response.status === 404 || response.status === 410);
+        // YouTube's feed endpoint randomly answers 404/500 even for healthy channels
+        err.transient = RSSTickerElement._isYouTube(rssUrl);
+        err.isDefinitive = !err.transient && source.name !== 'direct' && (response.status === 404 || response.status === 410);
         throw err;
       }
 
@@ -326,11 +338,12 @@ class RSSTickerElement extends HTMLElement {
       let text = raw;
       try {
         if (source.kind === 'jina') return this.parseJina(raw, rssUrl);
+        if (source.kind === 'rss2json') return this.parseRss2Json(raw);
         if (source.kind === 'allorigins-json') text = this.decodeContents(JSON.parse(raw).contents);
         return this.parseXMLFeed(text, rssUrl);
       } catch (parseError) {
         // jina re-formats pages, so a failure there says little about the feed itself
-        if (source.kind !== 'jina') parseError.isFeedProblem = true;
+        if (source.kind !== 'jina' && source.kind !== 'rss2json') parseError.isFeedProblem = true;
         const snippet = raw.slice(0, 160).replace(/\s+/g, ' ').trim();
         const type = response.headers.get('content-type') || 'no content-type';
         parseError.message += ` [HTTP ${response.status}, ${type}, starts with: "${snippet}"]`;
@@ -369,8 +382,10 @@ class RSSTickerElement extends HTMLElement {
     if (target) {
       const err = new Error(`the feed URL itself returned HTTP ${target}`);
       err.status = Number(target);
-      err.isFeedProblem = true;
-      err.isDefinitive = target === '404' || target === '410';
+      const yt = RSSTickerElement._isYouTube(rssUrl);
+      err.transient = yt;
+      err.isFeedProblem = !yt;
+      err.isDefinitive = !yt && (target === '404' || target === '410');
       throw err;
     }
 
@@ -383,9 +398,11 @@ class RSSTickerElement extends HTMLElement {
     const seen = new Set();
     const posts = [];
 
+    const bare = u => u.replace(/^https?:\/\/(www\.)?/, '');
     headings.forEach((m, i) => {
       const link = m[2];
       if (seen.has(link)) return;
+      if (bare(link) === bare(rssUrl)) return; // a heading pointing at the feed itself is not an entry
       let title = m[1]
         .replace(/!\[[^\]]*\]\([^)]*\)/g, '')                          // drop inline images
         .replace(/\\([\\`*_{}\[\]()#+\-.!<>~|=])/g, '$1')                // undo markdown escaping
@@ -400,7 +417,30 @@ class RSSTickerElement extends HTMLElement {
       posts.push({ domain, date: this.findDate(block), title, link });
     });
 
-    if (!posts.length) throw new Error('no feed entries found in reader output');
+    // Reader output for some feeds (e.g. YouTube) only has placeholder link text such as "video"
+    const generic = /^(video|watch|link|youtube|image|thumbnail|play|here|more)$/i;
+    const real = posts.filter(p => !generic.test(p.title));
+    if (!real.length) throw new Error('reader output had no real titles (only placeholders)');
+    return real.slice(0, maxPosts);
+  }
+
+  // rss2json: {status:'ok', items:[{title, pubDate:'YYYY-MM-DD HH:MM:SS', link}]}
+  parseRss2Json(raw) {
+    const data = JSON.parse(raw);
+    if (data.status !== 'ok') throw new Error(`rss2json: ${data.message || 'error response'}`);
+    const rssUrl = this.getAttribute('rss-url');
+    const domain = this.extractDomain(rssUrl);
+    const maxPostsAttr = parseInt(this.getAttribute('max-posts'));
+    const maxPosts = isNaN(maxPostsAttr) ? Infinity : maxPostsAttr;
+    const posts = (data.items || [])
+      .map(it => ({
+        domain,
+        date: this.parseDate((it.pubDate || '').trim()),
+        title: this.stripHtml(it.title || '').trim(),
+        link: (it.link || '').trim() || '#'
+      }))
+      .filter(p => p.title.length > 3);
+    if (!posts.length) throw new Error('rss2json returned no usable items');
     return posts.slice(0, maxPosts);
   }
 
@@ -450,7 +490,7 @@ class RSSTickerElement extends HTMLElement {
   // ---------------------------------------------------------------------
 
   getCacheKey(rssUrl) {
-    return `rss_ticker_cache_${encodeURIComponent(rssUrl)}_${this.getAttribute('max-posts') || 'all'}`;
+    return `rss_ticker_cache_v4_${encodeURIComponent(rssUrl)}_${this.getAttribute('max-posts') || 'all'}`;
   }
 
   loadFromCache(cacheKey, allowStale = false) {
@@ -810,6 +850,8 @@ RSSTickerElement._markNoDirect = (host) => {
   } catch (e) { /* silent */ }
 };
 
+RSSTickerElement._isYouTube = (url) => /(^|\.)youtube\.com$/.test(RSSTickerElement._hostOf(url));
+
 RSSTickerElement._hostOf = (url) => {
   try { return new URL(url).hostname; } catch { return ''; }
 };
@@ -838,7 +880,7 @@ RSSTickerElement._preconnect = () => {
 };
 
 if (customElements.get('rss-ticker')) {
-  console.warn('rss-ticker v6: a different <rss-ticker> is already registered on this page, so THIS copy is not being used. Remove the other script.');
+  console.warn('rss-ticker v7: a different <rss-ticker> is already registered on this page, so THIS copy is not being used. Remove the other script.');
 } else {
   customElements.define('rss-ticker', RSSTickerElement);
 }
